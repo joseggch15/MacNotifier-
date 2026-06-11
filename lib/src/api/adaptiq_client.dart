@@ -20,8 +20,10 @@ import 'dart:math';
 import 'package:http/http.dart' as http;
 
 import '../config/app_settings.dart';
+import '../core/sfl_check.dart' show sflKey;
 import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
+import '../models/dispense.dart';
 import 'queries.dart' as queries;
 
 class ApiException implements Exception {
@@ -51,9 +53,11 @@ class AdaptIQClient {
     this._settings, {
     String? siteId,
     Set<String>? knownOptionalFields,
+    String? equipmentField,
     http.Client? httpClient,
   })  : _siteId = (siteId != null && siteId.isNotEmpty) ? siteId : null,
         _optionalFields = knownOptionalFields,
+        _equipmentField = equipmentField,
         _http = httpClient ?? http.Client();
 
   final AppSettings _settings;
@@ -61,6 +65,9 @@ class AdaptIQClient {
 
   String? _siteId;
   Set<String>? _optionalFields;
+
+  /// Conexion de equipos del tenant: null = sin descubrir; '' = no existe.
+  String? _equipmentField;
   DateTime? _lastRequestAt;
 
   // En movil los reintentos son cortos: el ciclo de primer plano corre cada
@@ -75,6 +82,9 @@ class AdaptIQClient {
 
   /// Campos opcionales del nodo AdaptMac descubiertos por introspeccion.
   Set<String>? get discoveredOptionalFields => _optionalFields;
+
+  /// Conexion de equipos descubierta ('' = el tenant no expone equipos).
+  String? get equipmentField => _equipmentField;
 
   void close() => _http.close();
 
@@ -136,6 +146,63 @@ class AdaptIQClient {
     return [for (final n in nodes) Delivery.fromNode(n)];
   }
 
+  /// Trae los despachos actualizados desde [updatedFrom] (incremental).
+  Future<List<Dispense>> fetchDispenses({DateTime? updatedFrom}) async {
+    final siteId = await _resolveSiteId();
+    final nodes = await _paginateSiteConnection(
+      queries.dispensesQuery,
+      'dispenses',
+      {
+        'siteId': siteId,
+        'filter': {
+          if (updatedFrom != null)
+            'updatedFrom': updatedFrom.toUtc().toIso8601String(),
+        },
+        'first': kPageSize,
+      },
+    );
+    return [for (final n in nodes) Dispense.fromNode(n)];
+  }
+
+  /// Mapa de limites SFL {sflKey(equipo, producto): sfl} desde los
+  /// `consumptionTanks` del maestro de equipos. Devuelve `null` si el tenant
+  /// no expone una conexion de equipos (los sobrellenados no se pueden
+  /// auditar por GraphQL en ese caso).
+  Future<Map<String, double>?> fetchSflLimits() async {
+    final siteId = await _resolveSiteId();
+    final field = await _discoverEquipmentField();
+    if (field.isEmpty) return null;
+    final nodes = await _paginateSiteConnection(
+      queries.buildSflLimitsQuery(field),
+      field,
+      {'siteId': siteId, 'first': kPageSize},
+    );
+    final limits = <String, double>{};
+    for (final node in nodes) {
+      final eid = node['equipmentId']?.toString().trim();
+      if (eid == null || eid.isEmpty) continue;
+      final tanks = node['consumptionTanks'];
+      if (tanks is! List) continue;
+      for (final tank in tanks) {
+        if (tank is! Map) continue;
+        final sfl = tank['sfl'];
+        final sflValue = sfl is num
+            ? sfl.toDouble()
+            : sfl is String
+                ? double.tryParse(sfl)
+                : null;
+        if (sflValue == null || sflValue <= 0) continue;
+        final product = tank['product'];
+        final label = product is Map
+            ? (product['description'] ?? product['code'])?.toString()
+            : null;
+        if (label == null || label.isEmpty) continue;
+        limits[sflKey(eid, label)] = sflValue;
+      }
+    }
+    return limits;
+  }
+
   // -- resolucion de sitio ----------------------------------------------------
 
   Future<String> _resolveSiteId() async {
@@ -191,6 +258,32 @@ class AdaptIQClient {
       break;
     }
     return _optionalFields = available;
+  }
+
+  /// Introspecciona el tipo Site para hallar la conexion de equipos (port de
+  /// `_discover_equipment_field` de MSGQ). '' = ningun candidato existe.
+  Future<String> _discoverEquipmentField() async {
+    final cached = _equipmentField;
+    if (cached != null) return cached;
+    Map<String, dynamic> data;
+    try {
+      data = await _execute(queries.siteFieldsIntrospectionQuery);
+    } on AuthException {
+      rethrow;
+    } on ApiException {
+      return _equipmentField = ''; // introspeccion no disponible
+    }
+    final type = data['__type'];
+    final fields = type is Map<String, dynamic> ? type['fields'] : null;
+    final names = <String>{
+      if (fields is List)
+        for (final f in fields)
+          if (f is Map && f['name'] != null) f['name'].toString(),
+    };
+    for (final candidate in queries.equipmentFieldCandidates) {
+      if (names.contains(candidate)) return _equipmentField = candidate;
+    }
+    return _equipmentField = '';
   }
 
   // -- paginacion --------------------------------------------------------------

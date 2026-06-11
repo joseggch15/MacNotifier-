@@ -22,6 +22,7 @@ library;
 import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
 import 'delivery_check.dart';
+import 'sfl_check.dart';
 
 /// Orden del enum = severidad (se usa para ordenar eventos y la lista de UI).
 enum ConsoleCondition { keyBypass, offline, stale }
@@ -51,6 +52,8 @@ class HealthCheckResult {
     required this.fetchedAt,
     this.deliveries = const [],
     this.deliveryEvents = const [],
+    this.overfills = const [],
+    this.overfillEvents = const [],
   });
 
   final List<AdaptMac> consoles;
@@ -60,6 +63,12 @@ class HealthCheckResult {
   /// Entregas recientes (ventana local de kDeliveryKeepDays) para la UI.
   final List<Delivery> deliveries;
   final List<DeliveryEvent> deliveryEvents;
+
+  /// Sobrellenados SFL recientes (ventana local de kOverfillKeepDays).
+  final List<OverfillAlert> overfills;
+
+  /// Sobrellenados NUEVOS de este ciclo (ya filtrados por silenciado).
+  final List<OverfillAlert> overfillEvents;
 
   int get total => consoles.length;
   int get onlineCount => consoles.where((c) => c.online == true).length;

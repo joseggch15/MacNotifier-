@@ -40,6 +40,32 @@ const kDeliveryWatermarkOverlap = Duration(minutes: 2);
 /// esto la entrega ya no se re-consulta y su estado local solo ocupa espacio.
 const kDeliveryConditionsMaxAge = Duration(days: 30);
 
+// --- Auditoria SFL / sobrellenados (port de SFL_* en msgq/config.py) ---------
+/// Tolerancia relativa antes de marcar un exceso de SFL: solo se reporta si
+/// volume > sfl * (1 + tolerancia). Filtra el ruido de medicion (~0.5-1% de
+/// error de los medidores). = config.SFL_TOLERANCE_PCT de MSGQ.
+const kSflTolerancePct = 0.02;
+
+/// Exceso relativo (% sobre el SFL) a partir del cual la alerta es CRITICA.
+const kSflCriticalExcessPct = 10.0;
+
+/// Ventana hacia atras de la PRIMERA sincronizacion de despachos.
+const kDispenseLookback = Duration(days: 1);
+
+/// Cuanto historial de sobrellenados conserva el snapshot local para la UI.
+const kOverfillKeepDays = 7;
+
+/// Cada cuanto se refresca el mapa de limites SFL (equipos + consumptionTanks
+/// es la consulta mas pesada: el maestro cambia poco, una vez al dia basta).
+const kSflLimitsMaxAge = Duration(hours: 24);
+
+/// Tope de productos "conocidos" que se acumulan para la UI de silenciado.
+const kMaxKnownProducts = 60;
+
+/// Normaliza una etiqueta de producto para cruces y silenciado (igual que
+/// `_norm` en msgq/core/sfl_audit.py: texto, strip, upper).
+String normProduct(String? product) => (product ?? '').trim().toUpperCase();
+
 class AppSettings {
   const AppSettings({
     this.endpoint = kDefaultEndpoint,
@@ -53,6 +79,9 @@ class AppSettings {
     this.notifyRecovery = true,
     this.monitorDeliveries = true,
     this.varianceThresholdPct = kDefaultVarianceThresholdPct,
+    this.monitorOverfill = true,
+    this.mutedSflProducts = const [],
+    this.mutedDeliveryProducts = const [],
   });
 
   /// Endpoint GraphQL del tenant.
@@ -90,6 +119,23 @@ class AppSettings {
   /// Umbral (%) de desviacion medidor-vs-guia para alertar una entrega.
   final double varianceThresholdPct;
 
+  /// Monitorear sobrellenados de SFL (despachos que exceden el Safe Fill Level
+  /// del equipo para ese producto — la alarma "Equipment Overfill" de AdaptIQ).
+  final bool monitorOverfill;
+
+  /// Productos SILENCIADOS para las alertas de SFL (etiquetas normalizadas con
+  /// [normProduct]). El interes principal es el diesel: el resto se puede callar.
+  final List<String> mutedSflProducts;
+
+  /// Productos SILENCIADOS para las alertas de entregas.
+  final List<String> mutedDeliveryProducts;
+
+  bool isSflProductMuted(String? product) =>
+      mutedSflProducts.contains(normProduct(product));
+
+  bool isDeliveryProductMuted(String? product) =>
+      mutedDeliveryProducts.contains(normProduct(product));
+
   /// Sin token no se puede hablar con la API real.
   bool get isConfigured => token.trim().isNotEmpty;
 
@@ -107,6 +153,9 @@ class AppSettings {
     bool? notifyRecovery,
     bool? monitorDeliveries,
     double? varianceThresholdPct,
+    bool? monitorOverfill,
+    List<String>? mutedSflProducts,
+    List<String>? mutedDeliveryProducts,
   }) {
     return AppSettings(
       endpoint: endpoint ?? this.endpoint,
@@ -120,6 +169,10 @@ class AppSettings {
       notifyRecovery: notifyRecovery ?? this.notifyRecovery,
       monitorDeliveries: monitorDeliveries ?? this.monitorDeliveries,
       varianceThresholdPct: varianceThresholdPct ?? this.varianceThresholdPct,
+      monitorOverfill: monitorOverfill ?? this.monitorOverfill,
+      mutedSflProducts: mutedSflProducts ?? this.mutedSflProducts,
+      mutedDeliveryProducts:
+          mutedDeliveryProducts ?? this.mutedDeliveryProducts,
     );
   }
 

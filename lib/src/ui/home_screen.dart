@@ -1,9 +1,11 @@
-/// Pantalla principal: dos pestañas espejo del dashboard de escritorio MSGQ.
+/// Pantalla principal: tres pestañas espejo del dashboard de escritorio MSGQ.
 ///
 ///   * Consolas — la pestaña "AdaptMAC consoles": KPIs, filtro y lista
 ///     ordenada por gravedad.
 ///   * Entregas — la auditoria de deliveries: entregas sin confirmar y con
 ///     varianza medidor-vs-guia, las problematicas primero.
+///   * SFL — sobrellenados (la alarma "Equipment Overfill" de AdaptIQ
+///     reconstruida desde despachos × limites SFL).
 library;
 
 import 'package:flutter/material.dart';
@@ -14,11 +16,13 @@ import '../background/health_runner.dart';
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/health_check.dart';
+import '../core/sfl_check.dart';
 import '../core/util.dart';
 import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
 import '../notifications/notification_service.dart';
 import '../state/providers.dart';
+import 'reports_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -47,7 +51,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final syncError = ref.watch(lastSyncErrorProvider);
 
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('AdaptIQ Monitor'),
@@ -56,6 +60,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               tooltip: 'Refrescar ahora',
               icon: const Icon(Icons.refresh),
               onPressed: () => ref.read(consolesProvider.notifier).refreshNow(),
+            ),
+            IconButton(
+              tooltip: 'Reportes',
+              icon: const Icon(Icons.summarize_outlined),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const ReportsScreen()),
+              ),
             ),
             IconButton(
               tooltip: 'Configuracion',
@@ -68,6 +79,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           bottom: const TabBar(tabs: [
             Tab(icon: Icon(Icons.dns_outlined), text: 'Consolas'),
             Tab(icon: Icon(Icons.local_shipping_outlined), text: 'Entregas'),
+            Tab(icon: Icon(Icons.local_gas_station_outlined), text: 'SFL'),
           ]),
         ),
         body: !settings.isConfigured
@@ -96,6 +108,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           staleAfter: settings.staleAfter,
                         ),
                         _DeliveriesTab(
+                          result: result,
+                          filter: _filter,
+                          settings: settings,
+                        ),
+                        _OverfillTab(
                           result: result,
                           filter: _filter,
                           settings: settings,
@@ -609,6 +626,161 @@ class _DeliveryTile extends StatelessWidget {
             if (volumes != null) volumes,
             if (when != null)
               DateFormat('dd/MM HH:mm').format(when.toLocal()),
+          ].join(' · '),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+    );
+  }
+}
+
+// ===========================================================================
+// Pestaña SFL (sobrellenados)
+// ===========================================================================
+
+class _OverfillTab extends ConsumerWidget {
+  const _OverfillTab({
+    required this.result,
+    required this.filter,
+    required this.settings,
+  });
+
+  final HealthCheckResult result;
+  final String filter;
+  final AppSettings settings;
+
+  static final NumberFormat _litres = NumberFormat('#,##0.0');
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!settings.monitorOverfill) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Text(
+            'El monitoreo de sobrellenados SFL esta desactivado.\n'
+            'Activalo en Configuracion → Sobrellenados SFL.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+
+    final query = filter.trim().toLowerCase();
+    final visible = result.overfills.where((o) {
+      if (query.isEmpty) return true;
+      return '${o.equipmentId} ${o.equipmentDescription ?? ''} ${o.product ?? ''} ${o.tank ?? ''} ${o.fieldUser ?? ''}'
+          .toLowerCase()
+          .contains(query);
+    }).toList();
+
+    final totalExcess =
+        visible.fold<double>(0, (acc, o) => acc + o.excess);
+    final mutedCount = visible
+        .where((o) => settings.isSflProductMuted(o.product))
+        .length;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _Kpi(
+                label: 'Excesos ${kOverfillKeepDays}d',
+                value: '${visible.length}',
+                color: visible.isEmpty ? Colors.green : Colors.red,
+              ),
+              _Kpi(
+                label: 'Exceso total',
+                value: '${_litres.format(totalExcess)} L',
+                color: totalExcess == 0 ? Colors.green : Colors.orange,
+              ),
+              if (mutedCount > 0)
+                _Kpi(
+                  label: 'Silenciados',
+                  value: '$mutedCount',
+                  color: Colors.blueGrey,
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () => ref.read(consolesProvider.notifier).refreshNow(),
+            child: visible.isEmpty
+                ? ListView(
+                    children: const [
+                      SizedBox(height: 120),
+                      Center(
+                          child: Text(
+                              'Sin sobrellenados de SFL en la ventana local.')),
+                    ],
+                  )
+                : ListView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: visible.length,
+                    itemBuilder: (context, i) => _OverfillTile(
+                      alert: visible[i],
+                      muted:
+                          settings.isSflProductMuted(visible[i].product),
+                    ),
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _OverfillTile extends StatelessWidget {
+  const _OverfillTile({required this.alert, required this.muted});
+
+  final OverfillAlert alert;
+  final bool muted;
+
+  static final NumberFormat _litres = NumberFormat('#,##0.0');
+
+  @override
+  Widget build(BuildContext context) {
+    final o = alert;
+    final color = muted
+        ? Colors.blueGrey
+        : o.isCritical
+            ? Colors.red
+            : Colors.orange;
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: ListTile(
+        dense: true,
+        leading: Icon(
+            muted ? Icons.notifications_off_outlined : Icons.local_gas_station,
+            size: 18,
+            color: color),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(o.equipmentId,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(width: 8),
+            _Badge('+${_litres.format(o.excess)} L', color),
+            if (muted) const _Badge('SILENCIADO', Colors.blueGrey),
+          ],
+        ),
+        subtitle: Text(
+          [
+            if ((o.equipmentDescription ?? '').isNotEmpty)
+              o.equipmentDescription!,
+            if ((o.product ?? '').isNotEmpty) o.product!,
+            '${_litres.format(o.volume)} L vs SFL ${_litres.format(o.sfl)} L',
+            if ((o.fieldUser ?? '').isNotEmpty) o.fieldUser!,
+            if (o.collectedAt != null)
+              DateFormat('dd/MM HH:mm').format(o.collectedAt!.toLocal()),
           ].join(' · '),
           maxLines: 2,
           overflow: TextOverflow.ellipsis,

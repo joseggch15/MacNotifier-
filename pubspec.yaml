@@ -48,6 +48,10 @@ dependencies:
   shared_preferences: ^2.3.0
   # Formato de fechas en la UI.
   intl: ^0.20.0
+  # Reportes: generacion de PDF (Dart puro), carpeta temporal y hoja de compartir.
+  pdf: ^3.11.1
+  path_provider: ^2.1.4
+  share_plus: ^10.1.0
 
 dev_dependencies:
   flutter_test:

@@ -22,6 +22,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/health_check.dart';
+import '../core/sfl_check.dart';
 import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
 
@@ -42,9 +43,15 @@ class AppStore {
   static const _kNotifRecovery = 'cfg.notifyRecovery';
   static const _kMonitorDeliveries = 'cfg.monitorDeliveries';
   static const _kVariancePct = 'cfg.varianceThresholdPct';
+  static const _kMonitorOverfill = 'cfg.monitorOverfill';
+  static const _kMutedSfl = 'cfg.mutedSflProducts';
+  static const _kMutedDeliveries = 'cfg.mutedDeliveryProducts';
 
   static const _kCacheSiteId = 'cache.resolvedSiteId';
   static const _kCacheMacFields = 'cache.adaptMacFields';
+  static const _kCacheEquipmentField = 'cache.equipmentField';
+  static const _kCacheSflLimits = 'cache.sflLimits';
+  static const _kCacheSflFetchedAt = 'cache.sflLimitsFetchedAt';
 
   static const _kConditions = 'state.conditions';
   static const _kSnapshot = 'state.snapshot';
@@ -52,6 +59,10 @@ class AppStore {
   static const _kDeliveryWatermark = 'state.deliveries.watermark';
   static const _kDeliveryConditions = 'state.deliveries.conditions';
   static const _kDeliverySnapshot = 'state.deliveries.snapshot';
+  static const _kDispenseWatermark = 'state.dispenses.watermark';
+  static const _kOverfillNotified = 'state.overfill.notified';
+  static const _kOverfillSnapshot = 'state.overfill.snapshot';
+  static const _kKnownProducts = 'state.knownProducts';
 
   Future<void> reload() => _prefs.reload();
 
@@ -71,6 +82,10 @@ class AppStore {
       monitorDeliveries: _prefs.getBool(_kMonitorDeliveries) ?? true,
       varianceThresholdPct:
           _prefs.getDouble(_kVariancePct) ?? kDefaultVarianceThresholdPct,
+      monitorOverfill: _prefs.getBool(_kMonitorOverfill) ?? true,
+      mutedSflProducts: _prefs.getStringList(_kMutedSfl) ?? const [],
+      mutedDeliveryProducts:
+          _prefs.getStringList(_kMutedDeliveries) ?? const [],
     );
   }
 
@@ -86,6 +101,9 @@ class AppStore {
     await _prefs.setBool(_kNotifRecovery, s.notifyRecovery);
     await _prefs.setBool(_kMonitorDeliveries, s.monitorDeliveries);
     await _prefs.setDouble(_kVariancePct, s.varianceThresholdPct);
+    await _prefs.setBool(_kMonitorOverfill, s.monitorOverfill);
+    await _prefs.setStringList(_kMutedSfl, s.mutedSflProducts);
+    await _prefs.setStringList(_kMutedDeliveries, s.mutedDeliveryProducts);
   }
 
   /// Borra los descubrimientos contra la API. Llamar cuando cambia el
@@ -93,6 +111,9 @@ class AppStore {
   Future<void> clearApiCaches() async {
     await _prefs.remove(_kCacheSiteId);
     await _prefs.remove(_kCacheMacFields);
+    await _prefs.remove(_kCacheEquipmentField);
+    await _prefs.remove(_kCacheSflLimits);
+    await _prefs.remove(_kCacheSflFetchedAt);
   }
 
   // -- caches de API --------------------------------------------------------------
@@ -158,6 +179,7 @@ class AppStore {
         events: const [],
         fetchedAt: fetchedAt.toUtc(),
         deliveries: loadDeliverySnapshot(),
+        overfills: loadOverfillSnapshot(),
       );
     } on FormatException {
       return null;
@@ -268,6 +290,138 @@ class AppStore {
       _kDeliverySnapshot,
       jsonEncode([for (final d in deliveries) d.toJson()]),
     );
+  }
+
+  // -- auditoria SFL (sobrellenados) ---------------------------------------------------
+
+  /// Conexion de equipos descubierta ('' = el tenant no la expone).
+  String? get cachedEquipmentField => _prefs.getString(_kCacheEquipmentField);
+
+  /// Mapa de limites {sflKey: sfl} cacheado, con su fecha de refresco.
+  Map<String, double>? loadSflLimits() {
+    final raw = _prefs.getString(_kCacheSflLimits);
+    if (raw == null) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return null;
+      return {
+        for (final e in decoded.entries)
+          if (e.value is num) e.key: (e.value as num).toDouble(),
+      };
+    } on FormatException {
+      return null;
+    }
+  }
+
+  DateTime? get sflLimitsFetchedAt {
+    final raw = _prefs.getString(_kCacheSflFetchedAt);
+    return raw == null ? null : DateTime.tryParse(raw)?.toUtc();
+  }
+
+  /// Persiste el refresco de limites. `limits == null` significa "el tenant no
+  /// expone equipos": se guarda el marcador para no re-intentar cada ciclo.
+  Future<void> saveSflLimits(
+    Map<String, double>? limits, {
+    required String equipmentField,
+    required DateTime now,
+  }) async {
+    await _prefs.setString(_kCacheEquipmentField, equipmentField);
+    await _prefs.setString(_kCacheSflFetchedAt, now.toIso8601String());
+    if (limits != null) {
+      await _prefs.setString(_kCacheSflLimits, jsonEncode(limits));
+    }
+  }
+
+  /// Marca de agua incremental de despachos.
+  DateTime? get dispenseWatermark {
+    final raw = _prefs.getString(_kDispenseWatermark);
+    return raw == null ? null : DateTime.tryParse(raw)?.toUtc();
+  }
+
+  Future<void> saveDispenseWatermark(DateTime watermark) async {
+    await _prefs.setString(
+        _kDispenseWatermark, watermark.toUtc().toIso8601String());
+  }
+
+  /// Ids de despachos cuyo sobrellenado YA se proceso (dedup one-shot).
+  Set<String> loadNotifiedOverfillIds() {
+    final raw = _prefs.getString(_kOverfillNotified);
+    if (raw == null) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return {};
+      return decoded.keys.toSet();
+    } on FormatException {
+      return {};
+    }
+  }
+
+  Future<void> saveNotifiedOverfillIds(Set<String> ids,
+      {required DateTime now}) async {
+    // Mapa id -> timestamp de primera vista, para podar entradas viejas (el
+    // despacho ya no vuelve a aparecer en la consulta incremental).
+    final previousRaw = _prefs.getString(_kOverfillNotified);
+    var previous = const <String, dynamic>{};
+    if (previousRaw != null) {
+      try {
+        final decoded = jsonDecode(previousRaw);
+        if (decoded is Map<String, dynamic>) previous = decoded;
+      } on FormatException {
+        // estado corrupto: se regenera
+      }
+    }
+    final encoded = <String, String>{};
+    for (final id in ids) {
+      final t = previous[id]?.toString() ?? now.toIso8601String();
+      final age = DateTime.tryParse(t);
+      if (age != null &&
+          now.difference(age.toUtc()) > kDeliveryConditionsMaxAge) {
+        continue;
+      }
+      encoded[id] = t;
+    }
+    await _prefs.setString(_kOverfillNotified, jsonEncode(encoded));
+  }
+
+  /// Sobrellenados recientes para la UI (ventana local kOverfillKeepDays).
+  List<OverfillAlert> loadOverfillSnapshot() {
+    final raw = _prefs.getString(_kOverfillSnapshot);
+    if (raw == null) return [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return [];
+      return [
+        for (final o in decoded)
+          if (o is Map<String, dynamic>) OverfillAlert.fromJson(o),
+      ];
+    } on FormatException {
+      return [];
+    }
+  }
+
+  Future<void> saveOverfillSnapshot(List<OverfillAlert> overfills) async {
+    await _prefs.setString(
+      _kOverfillSnapshot,
+      jsonEncode([for (final o in overfills) o.toJson()]),
+    );
+  }
+
+  // -- productos conocidos (para la UI de silenciado por producto) ---------------------
+
+  List<String> get knownProducts =>
+      _prefs.getStringList(_kKnownProducts) ?? const [];
+
+  /// Acumula etiquetas de producto vistas en los datos (normalizadas), para
+  /// que la pantalla de configuracion pueda listarlas como silenciables.
+  Future<void> addKnownProducts(Iterable<String?> products) async {
+    final merged = {
+      ...knownProducts,
+      for (final p in products)
+        if (normProduct(p).isNotEmpty) normProduct(p),
+    }.toList()
+      ..sort();
+    await _prefs.setStringList(
+        _kKnownProducts, merged.take(kMaxKnownProducts).toList());
   }
 
   // -- ultimo error de sincronizacion ------------------------------------------------

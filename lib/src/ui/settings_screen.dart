@@ -34,6 +34,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late bool _notifyRecovery;
   late bool _monitorDeliveries;
   late double _varianceThresholdPct;
+  late bool _monitorOverfill;
+  late Set<String> _mutedSfl;
+  late Set<String> _mutedDeliveries;
+  late List<String> _knownProducts;
 
   bool _tokenVisible = false;
   bool _testing = false;
@@ -53,6 +57,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _notifyRecovery = s.notifyRecovery;
     _monitorDeliveries = s.monitorDeliveries;
     _varianceThresholdPct = s.varianceThresholdPct;
+    _monitorOverfill = s.monitorOverfill;
+    _mutedSfl = s.mutedSflProducts.toSet();
+    _mutedDeliveries = s.mutedDeliveryProducts.toSet();
+    // Productos vistos en los datos + los ya silenciados (por si un producto
+    // silenciado dejo de aparecer: debe poder des-silenciarse igual).
+    _knownProducts = {
+      ...ref.read(appStoreProvider).knownProducts,
+      ..._mutedSfl,
+      ..._mutedDeliveries,
+    }.toList()
+      ..sort();
   }
 
   @override
@@ -76,6 +91,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         notifyRecovery: _notifyRecovery,
         monitorDeliveries: _monitorDeliveries,
         varianceThresholdPct: _varianceThresholdPct,
+        monitorOverfill: _monitorOverfill,
+        mutedSflProducts: _mutedSfl.toList()..sort(),
+        mutedDeliveryProducts: _mutedDeliveries.toList()..sort(),
       );
 
   Future<void> _save() async {
@@ -281,7 +299,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     setState(() => _varianceThresholdPct = v ?? 1.0),
               ),
               const SizedBox(height: 4),
+              _ProductMuteList(
+                title: 'Silenciar entregas por producto',
+                subtitle: 'Los productos marcados NO notifican anomalias de '
+                    'entrega (siguen visibles en la pestaña Entregas).',
+                products: _knownProducts,
+                muted: _mutedDeliveries,
+                onChanged: (p, mute) => setState(() =>
+                    mute ? _mutedDeliveries.add(p) : _mutedDeliveries.remove(p)),
+              ),
             ],
+            const Divider(height: 32),
+            Text('Sobrellenados SFL',
+                style: Theme.of(context).textTheme.titleMedium),
+            SwitchListTile(
+              title: const Text('Monitorear sobrellenados'),
+              subtitle: const Text(
+                  'Despachos que exceden el Safe Fill Level del equipo '
+                  '(la alarma "Equipment Overfill" de AdaptIQ)'),
+              value: _monitorOverfill,
+              onChanged: (v) => setState(() => _monitorOverfill = v),
+            ),
+            if (_monitorOverfill)
+              _ProductMuteList(
+                title: 'Silenciar SFL por producto',
+                subtitle: 'Si solo interesa el diesel, silencia aqui el resto '
+                    'de productos (coolant, aceites, …).',
+                products: _knownProducts,
+                muted: _mutedSfl,
+                onChanged: (p, mute) => setState(
+                    () => mute ? _mutedSfl.add(p) : _mutedSfl.remove(p)),
+              ),
             const Divider(height: 32),
             Text('Notificaciones',
                 style: Theme.of(context).textTheme.titleMedium),
@@ -319,6 +367,65 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             const SizedBox(height: 24),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Lista de chips de producto donde "seleccionado" = SILENCIADO. Los
+/// productos se acumulan automaticamente a medida que el monitor ve datos.
+class _ProductMuteList extends StatelessWidget {
+  const _ProductMuteList({
+    required this.title,
+    required this.subtitle,
+    required this.products,
+    required this.muted,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String subtitle;
+  final List<String> products;
+  final Set<String> muted;
+  final void Function(String product, bool mute) onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 2),
+          Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 8),
+          if (products.isEmpty)
+            Text(
+              'Aun no hay productos detectados: apareceran aqui cuando el '
+              'monitor sincronice datos.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(fontStyle: FontStyle.italic),
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                for (final p in products)
+                  FilterChip(
+                    label: Text(p, style: const TextStyle(fontSize: 12)),
+                    avatar: muted.contains(p)
+                        ? const Icon(Icons.notifications_off, size: 16)
+                        : null,
+                    selected: muted.contains(p),
+                    onSelected: (v) => onChanged(p, v),
+                  ),
+              ],
+            ),
+        ],
       ),
     );
   }

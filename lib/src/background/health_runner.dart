@@ -11,11 +11,18 @@
 /// que una caida notificada por el worker NO se vuelve a notificar cuando el
 /// usuario abre la app (y viceversa): solo las transiciones generan eventos.
 ///
-/// Cada ciclo cubre DOS dominios:
+/// Cada ciclo cubre TRES dominios:
 ///   1. Consolas AdaptMAC (lista completa, es corta).
 ///   2. Entregas (deliveries) — sincronizacion INCREMENTAL por watermark
 ///      (`filter: { updatedFrom }`), como el poller de MSGQ: solo viajan las
 ///      entregas nuevas o editadas desde el ultimo ciclo.
+///   3. Sobrellenados SFL — despachos incrementales cruzados contra el mapa de
+///      limites (refrescado del maestro de equipos a lo sumo una vez al dia).
+///
+/// El "silenciado por producto" se aplica AL NOTIFICAR (y al armar los
+/// eventos del resultado), no al evaluar: el estado de dedup se mantiene
+/// completo, asi que silenciar/des-silenciar un producto no re-dispara
+/// alertas viejas.
 library;
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -24,6 +31,7 @@ import '../api/adaptiq_client.dart';
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/health_check.dart';
+import '../core/sfl_check.dart';
 import '../models/delivery.dart';
 import '../notifications/notification_service.dart';
 import '../storage/app_store.dart';
@@ -46,6 +54,7 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
     settings,
     siteId: s.cachedSiteId,
     knownOptionalFields: s.cachedAdaptMacFields,
+    equipmentField: s.cachedEquipmentField,
   );
   try {
     // ---- 1. Consolas AdaptMAC ------------------------------------------------
@@ -73,8 +82,31 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
     if (settings.monitorDeliveries) {
       final synced = await _syncDeliveries(client, s, settings, now);
       deliveries = synced.deliveries;
-      deliveryEvents = synced.events;
+      // El silenciado por producto se aplica a los EVENTOS (lo que se
+      // notifica), no al snapshot: la pestaña Entregas sigue mostrando todo.
+      deliveryEvents = [
+        for (final e in synced.events)
+          if (!settings.isDeliveryProductMuted(e.delivery.product)) e,
+      ];
     }
+
+    // ---- 3. Sobrellenados SFL ----------------------------------------------------
+    var overfills = <OverfillAlert>[];
+    var overfillEvents = <OverfillAlert>[];
+    if (settings.monitorOverfill) {
+      final synced = await _syncOverfills(client, s, settings, now);
+      overfills = synced.overfills;
+      overfillEvents = [
+        for (final o in synced.newAlerts)
+          if (!settings.isSflProductMuted(o.product)) o,
+      ];
+    }
+
+    // Acumula los productos vistos para la UI de silenciado.
+    await s.addKnownProducts([
+      for (final d in deliveries) d.product,
+      for (final o in overfills) o.product,
+    ]);
 
     final result = HealthCheckResult(
       consoles: consoles,
@@ -82,6 +114,8 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
       fetchedAt: now,
       deliveries: deliveries,
       deliveryEvents: deliveryEvents,
+      overfills: overfills,
+      overfillEvents: overfillEvents,
     );
     await s.saveSnapshot(result);
     await s.saveLastError(null);
@@ -93,6 +127,10 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
       if (deliveryEvents.isNotEmpty) {
         await NotificationService.instance
             .showDeliveryEvents(deliveryEvents, settings);
+      }
+      if (overfillEvents.isNotEmpty) {
+        await NotificationService.instance
+            .showOverfillEvents(overfillEvents, settings);
       }
     }
     return result;
@@ -153,4 +191,86 @@ Future<({List<Delivery> deliveries, List<DeliveryEvent> events})>
   await s.saveDeliveryWatermark(maxUpdated);
 
   return (deliveries: merged, events: diff.events);
+}
+
+/// Sincroniza despachos desde el watermark, los cruza contra el mapa de
+/// limites SFL (refrescado a lo sumo cada kSflLimitsMaxAge) y devuelve la
+/// ventana local + los sobrellenados NUEVOS (no procesados antes).
+Future<({List<OverfillAlert> overfills, List<OverfillAlert> newAlerts})>
+    _syncOverfills(
+  AdaptIQClient client,
+  AppStore s,
+  AppSettings settings,
+  DateTime now,
+) async {
+  // 1. Mapa de limites SFL (la consulta pesada: maestro de equipos completo).
+  var limits = s.loadSflLimits();
+  final fetchedAt = s.sflLimitsFetchedAt;
+  if (fetchedAt == null || now.difference(fetchedAt) > kSflLimitsMaxAge) {
+    try {
+      final fresh = await client.fetchSflLimits();
+      await s.saveSflLimits(fresh,
+          equipmentField: client.equipmentField ?? '', now: now);
+      if (fresh != null) {
+        limits = fresh;
+        await s.addKnownProducts(
+            [for (final key in fresh.keys) key.split('|').last]);
+      }
+    } on ApiException {
+      // Refresco fallido: se sigue auditando con el mapa cacheado (si existe).
+    }
+  }
+  if (limits == null || limits.isEmpty) {
+    // Tenant sin conexion de equipos (o maestro sin SFL): nada que auditar.
+    return (
+      overfills: s.loadOverfillSnapshot(),
+      newAlerts: const <OverfillAlert>[],
+    );
+  }
+
+  // 2. Despachos incrementales.
+  final watermark = s.dispenseWatermark;
+  final since = (watermark ?? now.subtract(kDispenseLookback))
+      .subtract(kDeliveryWatermarkOverlap);
+  final dispenses = await client.fetchDispenses(updatedFrom: since);
+
+  // 3. Deteccion + dedup one-shot por dispense id. TODOS los detectados se
+  // marcan como vistos (silenciados incluidos): des-silenciar un producto no
+  // debe replantear sobrellenados viejos.
+  final detected = detectOverfills(dispenses: dispenses, limits: limits);
+  final seen = s.loadNotifiedOverfillIds();
+  final newAlerts = [
+    for (final o in detected)
+      if (!seen.contains(o.dispenseId)) o,
+  ];
+  await s.saveNotifiedOverfillIds(
+    {...seen, for (final o in detected) o.dispenseId},
+    now: now,
+  );
+
+  // 4. Snapshot local (ventana kOverfillKeepDays, reemplazo por id).
+  final cutoff = now.subtract(const Duration(days: kOverfillKeepDays));
+  final byId = <String, OverfillAlert>{
+    for (final o in s.loadOverfillSnapshot()) o.dispenseId: o,
+    for (final o in detected) o.dispenseId: o,
+  };
+  final merged = byId.values
+      .where((o) => (o.collectedAt ?? now).isAfter(cutoff))
+      .toList()
+    ..sort((a, b) {
+      final ta = a.collectedAt ?? DateTime(0);
+      final tb = b.collectedAt ?? DateTime(0);
+      return tb.compareTo(ta);
+    });
+  await s.saveOverfillSnapshot(merged);
+
+  // 5. Watermark al mayor recordUpdatedAt visto.
+  var maxUpdated = watermark ?? since;
+  for (final d in dispenses) {
+    final u = d.updatedAt;
+    if (u != null && u.isAfter(maxUpdated)) maxUpdated = u;
+  }
+  await s.saveDispenseWatermark(maxUpdated);
+
+  return (overfills: merged, newAlerts: newAlerts);
 }

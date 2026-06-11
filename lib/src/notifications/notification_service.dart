@@ -21,6 +21,7 @@ import 'package:intl/intl.dart';
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/health_check.dart';
+import '../core/sfl_check.dart';
 import '../core/util.dart';
 import '../models/delivery.dart';
 
@@ -35,6 +36,7 @@ class NotificationService {
   static const int maxIndividual = 4;
   static const int _summaryNotificationId = 0x00ADAC; // fijo: el resumen se actualiza a si mismo
   static const int _deliverySummaryNotificationId = 0x00DE11;
+  static const int _overfillSummaryNotificationId = 0x005F1;
 
   static bool get _supported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
@@ -178,6 +180,48 @@ class NotificationService {
               : _Channel.warning,
         );
       }
+    }
+  }
+
+  /// Publica los sobrellenados SFL nuevos del ciclo (eventos one-shot: el
+  /// despacho ya ocurrio, no hay "recuperacion"). Mismo formato que la alarma
+  /// "Equipment Overfill" de AdaptIQ: equipo + litros de exceso.
+  Future<void> showOverfillEvents(
+      List<OverfillAlert> alerts, AppSettings settings) async {
+    if (!_supported || alerts.isEmpty) return;
+    await init();
+
+    if (alerts.length > maxIndividual) {
+      final lines = [
+        for (final o in alerts)
+          '${o.equipmentId} — exceso ${_litres.format(o.excess)} L'
+              '${(o.product ?? '').isEmpty ? '' : ' (${o.product})'}',
+      ];
+      await _show(
+        id: _overfillSummaryNotificationId,
+        title: '🛢️ ${alerts.length} sobrellenados de SFL',
+        body: lines.join(' · '),
+        channel: _Channel.critical,
+        inboxLines: lines,
+      );
+      return;
+    }
+    for (final o in alerts) {
+      await _show(
+        id: stableId('overfill/${o.dispenseId}'),
+        title:
+            '🛢️ ${o.equipmentId} sobrellenado +${_litres.format(o.excess)} L',
+        body: [
+          if ((o.equipmentDescription ?? '').isNotEmpty)
+            o.equipmentDescription!,
+          if ((o.product ?? '').isNotEmpty) o.product!,
+          '${_litres.format(o.volume)} L vs SFL ${_litres.format(o.sfl)} L',
+          if ((o.fieldUser ?? '').isNotEmpty) 'Operador: ${o.fieldUser}',
+          if (o.collectedAt != null)
+            DateFormat('dd/MM HH:mm').format(o.collectedAt!.toLocal()),
+        ].join(' · '),
+        channel: o.isCritical ? _Channel.critical : _Channel.warning,
+      );
     }
   }
 

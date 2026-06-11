@@ -64,6 +64,60 @@ query Deliveries(\$siteId: ID!, \$filter: MovementQuery, \$first: Int, \$after: 
   }
 }''';
 
+/// Despachos (dispenses): conexion paginada y filtrable incrementalmente.
+/// Campos minimos para la auditoria SFL y los reportes — todos en la query de
+/// produccion de MSGQ contra Merian.
+const dispensesQuery = '''
+query Dispenses(\$siteId: ID!, \$filter: MovementQuery, \$first: Int, \$after: String) {
+  site(id: \$siteId) {
+    dispenses(filter: \$filter, first: \$first, after: \$after) {
+      pageInfo { hasNextPage endCursor }
+      edges { node {
+        id
+        status
+        type
+        volume
+        recordCollectedAt
+        recordUpdatedAt
+        product { code description }
+        target { equipmentId description }
+        source { code name }
+        fieldUser { name }
+        adaptMac { code }
+      } }
+    }
+  }
+}''';
+
+/// Introspeccion del tipo Site para hallar la conexion de EQUIPOS (su nombre
+/// varia por tenant; igual que `SITE_FIELDS_INTROSPECTION` en MSGQ).
+const siteFieldsIntrospectionQuery =
+    '{ __type(name: "Site") { fields { name } } }';
+
+/// Nombres candidatos de la conexion de equipos (mismos que MSGQ).
+const equipmentFieldCandidates = [
+  'equipmentItems',
+  'equipment_items',
+  'equipments',
+  'equipment',
+];
+
+/// Query de limites SFL: por equipo, sus `consumptionTanks` (validado en vivo
+/// por MSGQ: `ConsumptionTank{sfl, product{code description}}`). Solo se piden
+/// los campos del cruce SFL para no arrastrar todo el maestro de equipos.
+String buildSflLimitsQuery(String fieldName) => '''
+query SflLimits(\$siteId: ID!, \$first: Int, \$after: String) {
+  site(id: \$siteId) {
+    $fieldName(first: \$first, after: \$after) {
+      pageInfo { hasNextPage endCursor }
+      edges { node {
+        equipmentId
+        consumptionTanks { sfl product { code description } }
+      } }
+    }
+  }
+}''';
+
 /// Arma la query de consolas incluyendo solo los campos opcionales presentes
 /// en `optional` (descubiertos por introspeccion). Sin opcionales queda la
 /// query base, identica a la que MSGQ usa en produccion contra Merian.
