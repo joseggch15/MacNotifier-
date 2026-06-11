@@ -33,6 +33,37 @@ const optionalAdaptMacFields = <String, String>{
   'updatedAt': 'updatedAt',
 };
 
+/// Entregas (deliveries): conexion paginada y filtrable incrementalmente con
+/// `filter: { updatedFrom: ISO8601 }` (tipo MovementQuery). Todos los campos
+/// pedidos estan en la query de produccion de MSGQ contra Merian — no
+/// necesitan introspeccion. `volume` = MEDIDO; `secondaryVolume` = GUIA.
+const deliveriesQuery = '''
+query Deliveries(\$siteId: ID!, \$filter: MovementQuery, \$first: Int, \$after: String) {
+  site(id: \$siteId) {
+    deliveries(filter: \$filter, first: \$first, after: \$after) {
+      pageInfo { hasNextPage endCursor }
+      edges { node {
+        id
+        status
+        type
+        volume
+        uom
+        secondaryVolume
+        volumeSource
+        secondaryVolumeSource
+        docketNumber
+        driver
+        company
+        recordCollectedAt
+        recordUpdatedAt
+        product { code description }
+        target { code name }
+        adaptMac { code }
+      } }
+    }
+  }
+}''';
+
 /// Arma la query de consolas incluyendo solo los campos opcionales presentes
 /// en `optional` (descubiertos por introspeccion). Sin opcionales queda la
 /// query base, identica a la que MSGQ usa en produccion contra Merian.

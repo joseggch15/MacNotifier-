@@ -32,6 +32,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late int _staleMinutes;
   late bool _notificationsEnabled;
   late bool _notifyRecovery;
+  late bool _monitorDeliveries;
+  late double _varianceThresholdPct;
 
   bool _tokenVisible = false;
   bool _testing = false;
@@ -49,6 +51,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _staleMinutes = s.staleMinutes;
     _notificationsEnabled = s.notificationsEnabled;
     _notifyRecovery = s.notifyRecovery;
+    _monitorDeliveries = s.monitorDeliveries;
+    _varianceThresholdPct = s.varianceThresholdPct;
   }
 
   @override
@@ -70,6 +74,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         staleMinutes: _staleMinutes,
         notificationsEnabled: _notificationsEnabled,
         notifyRecovery: _notifyRecovery,
+        monitorDeliveries: _monitorDeliveries,
+        varianceThresholdPct: _varianceThresholdPct,
       );
 
   Future<void> _save() async {
@@ -245,6 +251,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ],
               onChanged: (v) => setState(() => _staleMinutes = v ?? 30),
             ),
+            const Divider(height: 32),
+            Text('Entregas (deliveries)',
+                style: Theme.of(context).textTheme.titleMedium),
+            SwitchListTile(
+              title: const Text('Monitorear entregas'),
+              subtitle: const Text(
+                  'Alerta entregas sin confirmar y varianza medidor vs guia'),
+              value: _monitorDeliveries,
+              onChanged: (v) => setState(() => _monitorDeliveries = v),
+            ),
+            if (_monitorDeliveries) ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<double>(
+                value: _varianceThresholdPct,
+                decoration: const InputDecoration(
+                  labelText: 'Umbral de varianza',
+                  helperText:
+                      '|medido − guia| / guia. A partir de 5% la alerta es critica.',
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 0.5, child: Text('0.5 %')),
+                  DropdownMenuItem(value: 1.0, child: Text('1 % (recomendado)')),
+                  DropdownMenuItem(value: 2.0, child: Text('2 %')),
+                  DropdownMenuItem(value: 5.0, child: Text('5 %')),
+                ],
+                onChanged: (v) =>
+                    setState(() => _varianceThresholdPct = v ?? 1.0),
+              ),
+              const SizedBox(height: 4),
+            ],
             const Divider(height: 32),
             Text('Notificaciones',
                 style: Theme.of(context).textTheme.titleMedium),

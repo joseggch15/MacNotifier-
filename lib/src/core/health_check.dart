@@ -20,6 +20,8 @@
 library;
 
 import '../models/adapt_mac.dart';
+import '../models/delivery.dart';
+import 'delivery_check.dart';
 
 /// Orden del enum = severidad (se usa para ordenar eventos y la lista de UI).
 enum ConsoleCondition { keyBypass, offline, stale }
@@ -47,16 +49,25 @@ class HealthCheckResult {
     required this.consoles,
     required this.events,
     required this.fetchedAt,
+    this.deliveries = const [],
+    this.deliveryEvents = const [],
   });
 
   final List<AdaptMac> consoles;
   final List<ConsoleEvent> events;
   final DateTime fetchedAt;
 
+  /// Entregas recientes (ventana local de kDeliveryKeepDays) para la UI.
+  final List<Delivery> deliveries;
+  final List<DeliveryEvent> deliveryEvents;
+
   int get total => consoles.length;
   int get onlineCount => consoles.where((c) => c.online == true).length;
   int get offlineCount => consoles.where((c) => c.online == false).length;
   int get bypassCount => consoles.where((c) => c.keyBypass == true).length;
+
+  int get unconfirmedDeliveries =>
+      deliveries.where((d) => d.isUnconfirmed).length;
 }
 
 /// Condiciones activas de UNA consola (mismas reglas que MSGQ: el stale solo

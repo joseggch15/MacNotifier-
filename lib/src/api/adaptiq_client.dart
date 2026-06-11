@@ -21,6 +21,7 @@ import 'package:http/http.dart' as http;
 
 import '../config/app_settings.dart';
 import '../models/adapt_mac.dart';
+import '../models/delivery.dart';
 import 'queries.dart' as queries;
 
 class ApiException implements Exception {
@@ -114,6 +115,25 @@ class AdaptIQClient {
       );
     }
     return [for (final n in nodes) AdaptMac.fromNode(n)];
+  }
+
+  /// Trae las entregas actualizadas desde [updatedFrom] (filtro incremental
+  /// `MovementQuery.updatedFrom`, igual que el poller de MSGQ).
+  Future<List<Delivery>> fetchDeliveries({DateTime? updatedFrom}) async {
+    final siteId = await _resolveSiteId();
+    final nodes = await _paginateSiteConnection(
+      queries.deliveriesQuery,
+      'deliveries',
+      {
+        'siteId': siteId,
+        'filter': {
+          if (updatedFrom != null)
+            'updatedFrom': updatedFrom.toUtc().toIso8601String(),
+        },
+        'first': kPageSize,
+      },
+    );
+    return [for (final n in nodes) Delivery.fromNode(n)];
   }
 
   // -- resolucion de sitio ----------------------------------------------------

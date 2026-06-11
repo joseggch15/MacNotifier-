@@ -20,8 +20,10 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_settings.dart';
+import '../core/delivery_check.dart';
 import '../core/health_check.dart';
 import '../models/adapt_mac.dart';
+import '../models/delivery.dart';
 
 class AppStore {
   AppStore(this._prefs);
@@ -38,6 +40,8 @@ class AppStore {
   static const _kStaleMinutes = 'cfg.staleMinutes';
   static const _kNotifEnabled = 'cfg.notificationsEnabled';
   static const _kNotifRecovery = 'cfg.notifyRecovery';
+  static const _kMonitorDeliveries = 'cfg.monitorDeliveries';
+  static const _kVariancePct = 'cfg.varianceThresholdPct';
 
   static const _kCacheSiteId = 'cache.resolvedSiteId';
   static const _kCacheMacFields = 'cache.adaptMacFields';
@@ -45,6 +49,9 @@ class AppStore {
   static const _kConditions = 'state.conditions';
   static const _kSnapshot = 'state.snapshot';
   static const _kLastError = 'state.lastError';
+  static const _kDeliveryWatermark = 'state.deliveries.watermark';
+  static const _kDeliveryConditions = 'state.deliveries.conditions';
+  static const _kDeliverySnapshot = 'state.deliveries.snapshot';
 
   Future<void> reload() => _prefs.reload();
 
@@ -61,6 +68,9 @@ class AppStore {
       staleMinutes: _prefs.getInt(_kStaleMinutes) ?? kDefaultStaleMinutes,
       notificationsEnabled: _prefs.getBool(_kNotifEnabled) ?? true,
       notifyRecovery: _prefs.getBool(_kNotifRecovery) ?? true,
+      monitorDeliveries: _prefs.getBool(_kMonitorDeliveries) ?? true,
+      varianceThresholdPct:
+          _prefs.getDouble(_kVariancePct) ?? kDefaultVarianceThresholdPct,
     );
   }
 
@@ -74,6 +84,8 @@ class AppStore {
     await _prefs.setInt(_kStaleMinutes, s.staleMinutes);
     await _prefs.setBool(_kNotifEnabled, s.notificationsEnabled);
     await _prefs.setBool(_kNotifRecovery, s.notifyRecovery);
+    await _prefs.setBool(_kMonitorDeliveries, s.monitorDeliveries);
+    await _prefs.setDouble(_kVariancePct, s.varianceThresholdPct);
   }
 
   /// Borra los descubrimientos contra la API. Llamar cuando cambia el
@@ -145,6 +157,7 @@ class AppStore {
         ],
         events: const [],
         fetchedAt: fetchedAt.toUtc(),
+        deliveries: loadDeliverySnapshot(),
       );
     } on FormatException {
       return null;
@@ -158,6 +171,102 @@ class AppStore {
         'fetchedAt': result.fetchedAt.toIso8601String(),
         'consoles': [for (final c in result.consoles) c.toJson()],
       }),
+    );
+  }
+
+  // -- estado de entregas (auditoria de deliveries) -----------------------------------
+
+  /// Marca de agua incremental: el mayor `recordUpdatedAt` ya sincronizado.
+  /// `null` = primera sincronizacion (se usa la ventana kDeliveryLookback).
+  DateTime? get deliveryWatermark {
+    final raw = _prefs.getString(_kDeliveryWatermark);
+    return raw == null ? null : DateTime.tryParse(raw)?.toUtc();
+  }
+
+  Future<void> saveDeliveryWatermark(DateTime watermark) async {
+    await _prefs.setString(
+        _kDeliveryWatermark, watermark.toUtc().toIso8601String());
+  }
+
+  /// Condiciones ya notificadas por entrega: {id: {"c": [..], "t": iso}}.
+  /// El timestamp permite podar entradas viejas (la entrega ya no se actualiza).
+  Map<String, Set<DeliveryCondition>> loadDeliveryConditions() {
+    final raw = _prefs.getString(_kDeliveryConditions);
+    if (raw == null) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return {};
+      final out = <String, Set<DeliveryCondition>>{};
+      for (final entry in decoded.entries) {
+        final value = entry.value;
+        if (value is! Map) continue;
+        final names = value['c'];
+        out[entry.key] = <DeliveryCondition>{
+          if (names is List)
+            for (final name in names)
+              ...DeliveryCondition.values.where((c) => c.name == name),
+        };
+      }
+      return out;
+    } on FormatException {
+      return {};
+    }
+  }
+
+  Future<void> saveDeliveryConditions(
+    Map<String, Set<DeliveryCondition>> conditions, {
+    required DateTime now,
+  }) async {
+    // Conserva el timestamp original de cada entrada para poder podarla
+    // cuando supere kDeliveryConditionsMaxAge.
+    final previousRaw = _prefs.getString(_kDeliveryConditions);
+    var previousTimes = const <String, dynamic>{};
+    if (previousRaw != null) {
+      try {
+        final decoded = jsonDecode(previousRaw);
+        if (decoded is Map<String, dynamic>) previousTimes = decoded;
+      } on FormatException {
+        // snapshot corrupto: se regenera completo
+      }
+    }
+    final encoded = <String, dynamic>{};
+    for (final entry in conditions.entries) {
+      if (entry.value.isEmpty) continue;
+      final prev = previousTimes[entry.key];
+      final t = (prev is Map ? prev['t']?.toString() : null) ??
+          now.toIso8601String();
+      final age = DateTime.tryParse(t);
+      if (age != null && now.difference(age.toUtc()) > kDeliveryConditionsMaxAge) {
+        continue; // poda: la entrega ya salio de la ventana de actualizacion
+      }
+      encoded[entry.key] = {
+        'c': [for (final c in entry.value) c.name],
+        't': t,
+      };
+    }
+    await _prefs.setString(_kDeliveryConditions, jsonEncode(encoded));
+  }
+
+  /// Entregas recientes para la UI (ventana local, reemplazadas por id).
+  List<Delivery> loadDeliverySnapshot() {
+    final raw = _prefs.getString(_kDeliverySnapshot);
+    if (raw == null) return [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return [];
+      return [
+        for (final d in decoded)
+          if (d is Map<String, dynamic>) Delivery.fromJson(d),
+      ];
+    } on FormatException {
+      return [];
+    }
+  }
+
+  Future<void> saveDeliverySnapshot(List<Delivery> deliveries) async {
+    await _prefs.setString(
+      _kDeliverySnapshot,
+      jsonEncode([for (final d in deliveries) d.toJson()]),
     );
   }
 

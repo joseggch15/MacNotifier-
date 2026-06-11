@@ -13,6 +13,33 @@ const kDefaultBackgroundMinutes = 15; // minimo que permite WorkManager/iOS
 const kDefaultStaleMinutes = 30; // = config.ADAPTMAC_STALE_MINUTES de MSGQ
 const kPageSize = 100; // la API limita a 100 registros por pagina
 
+// --- Auditoria de entregas (port de DELIVERY_* en msgq/config.py) -----------
+/// Desviacion relativa minima (%) medidor-vs-guia para marcar una entrega.
+const kDefaultVarianceThresholdPct = 1.0;
+
+/// Desviacion (%) a partir de la cual la alerta escala a CRITICA.
+const kDeliveryCriticalPct = 5.0;
+
+/// Entregas donde AMBOS volumenes quedan por debajo de esto se ignoran: un %
+/// enorme sobre pocos litros no es relevante. OJO: a diferencia de MSGQ (que
+/// filtra solo por el volumen MEDIDO), basta con que la guia O el medidor
+/// superen el minimo — una entrega partida (19 L medidos vs 40.000 de guia) es
+/// justamente el caso que queremos cazar.
+const kDeliveryMinVolumeL = 100.0;
+
+/// Ventana hacia atras de la PRIMERA sincronizacion de entregas (sin watermark).
+const kDeliveryLookback = Duration(days: 3);
+
+/// Cuanto historial de entregas conserva el snapshot local para la UI.
+const kDeliveryKeepDays = 7;
+
+/// Solapamiento al consultar desde el watermark (absorbe desfases de reloj).
+const kDeliveryWatermarkOverlap = Duration(minutes: 2);
+
+/// Edad maxima de una entrada en el mapa de condiciones notificadas: pasado
+/// esto la entrega ya no se re-consulta y su estado local solo ocupa espacio.
+const kDeliveryConditionsMaxAge = Duration(days: 30);
+
 class AppSettings {
   const AppSettings({
     this.endpoint = kDefaultEndpoint,
@@ -24,6 +51,8 @@ class AppSettings {
     this.staleMinutes = kDefaultStaleMinutes,
     this.notificationsEnabled = true,
     this.notifyRecovery = true,
+    this.monitorDeliveries = true,
+    this.varianceThresholdPct = kDefaultVarianceThresholdPct,
   });
 
   /// Endpoint GraphQL del tenant.
@@ -54,6 +83,13 @@ class AppSettings {
   /// Notificar tambien la RECUPERACION (consola reconectada / bypass retirado).
   final bool notifyRecovery;
 
+  /// Monitorear tambien las ENTREGAS (deliveries): varianza medidor-vs-guia y
+  /// entregas sin confirmar.
+  final bool monitorDeliveries;
+
+  /// Umbral (%) de desviacion medidor-vs-guia para alertar una entrega.
+  final double varianceThresholdPct;
+
   /// Sin token no se puede hablar con la API real.
   bool get isConfigured => token.trim().isNotEmpty;
 
@@ -69,6 +105,8 @@ class AppSettings {
     int? staleMinutes,
     bool? notificationsEnabled,
     bool? notifyRecovery,
+    bool? monitorDeliveries,
+    double? varianceThresholdPct,
   }) {
     return AppSettings(
       endpoint: endpoint ?? this.endpoint,
@@ -80,6 +118,8 @@ class AppSettings {
       staleMinutes: staleMinutes ?? this.staleMinutes,
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       notifyRecovery: notifyRecovery ?? this.notifyRecovery,
+      monitorDeliveries: monitorDeliveries ?? this.monitorDeliveries,
+      varianceThresholdPct: varianceThresholdPct ?? this.varianceThresholdPct,
     );
   }
 

@@ -19,8 +19,10 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:intl/intl.dart';
 
 import '../config/app_settings.dart';
+import '../core/delivery_check.dart';
 import '../core/health_check.dart';
 import '../core/util.dart';
+import '../models/delivery.dart';
 
 class NotificationService {
   NotificationService._();
@@ -32,6 +34,7 @@ class NotificationService {
 
   static const int maxIndividual = 4;
   static const int _summaryNotificationId = 0x00ADAC; // fijo: el resumen se actualiza a si mismo
+  static const int _deliverySummaryNotificationId = 0x00DE11;
 
   static bool get _supported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
@@ -119,6 +122,65 @@ class NotificationService {
     }
   }
 
+  /// Publica las notificaciones de un ciclo de auditoria de ENTREGAS.
+  ///
+  /// Mismas reglas de presentacion que las consolas: id estable por
+  /// (entrega, condicion), la confirmacion reemplaza a la alerta de
+  /// "sin confirmar" en la bandeja, y un ciclo con muchas alzas (p. ej. la
+  /// primera sincronizacion) se agrupa en una notificacion resumen.
+  Future<void> showDeliveryEvents(
+      List<DeliveryEvent> events, AppSettings settings) async {
+    if (!_supported || events.isEmpty) return;
+    await init();
+
+    final raised = [for (final e in events) if (e.active) e];
+    final cleared = [for (final e in events) if (!e.active) e];
+
+    for (final event in cleared) {
+      final id = _deliveryIdFor(event);
+      // La unica "recuperacion" noticiable es la CONFIRMACION de una entrega
+      // que estaba sin confirmar; una varianza que se corrige (entrega
+      // editada) simplemente retira la alerta de la bandeja.
+      if (event.condition == DeliveryCondition.unconfirmed &&
+          settings.notifyRecovery) {
+        await _show(
+          id: id,
+          title: '🟢 Entrega ${event.delivery.label} confirmada',
+          body: _deliveryContext(event.delivery),
+          channel: _Channel.status,
+        );
+      } else {
+        await _plugin.cancel(id);
+      }
+    }
+
+    if (raised.length > maxIndividual) {
+      final lines = [
+        for (final e in raised)
+          '${e.delivery.label} — ${_deliveryConditionLabel(e)}',
+      ];
+      await _show(
+        id: _deliverySummaryNotificationId,
+        title: '⛽ ${raised.length} entregas con anomalias',
+        body: lines.join(' · '),
+        channel: _Channel.critical,
+        inboxLines: lines,
+      );
+    } else {
+      for (final event in raised) {
+        await _show(
+          id: _deliveryIdFor(event),
+          title: _deliveryAlertTitle(event),
+          body: _deliveryAlertBody(event),
+          channel: event.condition == DeliveryCondition.unconfirmed ||
+                  event.isCritical
+              ? _Channel.critical
+              : _Channel.warning,
+        );
+      }
+    }
+  }
+
   /// Notificacion de prueba desde la pantalla de configuracion.
   Future<void> showTest() async {
     if (!_supported) return;
@@ -134,6 +196,55 @@ class NotificationService {
   // -- helpers -----------------------------------------------------------------
 
   int _idFor(ConsoleEvent e) => stableId('${e.console.code}/${e.condition.name}');
+
+  int _deliveryIdFor(DeliveryEvent e) =>
+      stableId('delivery/${e.delivery.id}/${e.condition.name}');
+
+  static final NumberFormat _litres = NumberFormat('#,##0.0');
+
+  String _deliveryConditionLabel(DeliveryEvent e) =>
+      switch (e.condition) {
+        DeliveryCondition.unconfirmed => 'sin confirmar',
+        DeliveryCondition.highVariance =>
+          'varianza ${e.delivery.deviationPct?.toStringAsFixed(2) ?? '?'}%',
+      };
+
+  String _deliveryAlertTitle(DeliveryEvent e) => switch (e.condition) {
+        DeliveryCondition.unconfirmed =>
+          '🟡 Entrega ${e.delivery.label} sin confirmar',
+        DeliveryCondition.highVariance =>
+          '${e.isCritical ? '🔴' : '🟠'} Varianza '
+              '${e.delivery.deviationPct?.toStringAsFixed(2) ?? '?'}% '
+              'en entrega ${e.delivery.label}',
+      };
+
+  String _deliveryAlertBody(DeliveryEvent e) {
+    final d = e.delivery;
+    final parts = <String>[_deliveryContext(d)];
+    final measured = d.volume, field = d.secondaryVolume;
+    if (measured != null && field != null) {
+      parts.add(
+          'Medido ${_litres.format(measured)} L vs guia ${_litres.format(field)} L');
+      final dev = d.deviationL ?? 0;
+      if (dev < 0) {
+        // La guia reclama mas litros de los que entraron al tanque: el caso
+        // de sobre-facturacion / entrega partida.
+        parts.add('faltan ${_litres.format(dev.abs())} L');
+      } else if (dev > 0) {
+        parts.add('exceso de ${_litres.format(dev)} L sobre la guia');
+      }
+    }
+    return parts.where((p) => p.isNotEmpty).join(' · ');
+  }
+
+  String _deliveryContext(Delivery d) {
+    final when = d.collectedAt;
+    return [
+      if ((d.tank ?? '').isNotEmpty) d.tank!,
+      if ((d.product ?? '').isNotEmpty) d.product!,
+      if (when != null) DateFormat('dd/MM HH:mm').format(when.toLocal()),
+    ].join(' · ');
+  }
 
   String _conditionLabel(ConsoleCondition c) => switch (c) {
         ConsoleCondition.offline => 'sin conexion',
