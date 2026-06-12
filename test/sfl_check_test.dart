@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:adapt_mac_notifier/src/config/app_settings.dart';
 import 'package:adapt_mac_notifier/src/core/sfl_check.dart';
+import 'package:adapt_mac_notifier/src/i18n/l10n.dart';
 import 'package:adapt_mac_notifier/src/models/dispense.dart';
 import 'package:adapt_mac_notifier/src/reports/report_service.dart';
 
@@ -109,6 +110,20 @@ void main() {
       expect(s.isSflProductMuted('Diesel'), isFalse);
       expect(s.isDeliveryProductMuted('hydraulic oil'), isTrue);
       expect(s.isDeliveryProductMuted('Diesel'), isFalse);
+    });
+
+    test('isConsoleMuted por codigo exacto', () {
+      const s = AppSettings(mutedConsoles: ['MER.11', 'MER.14']);
+      expect(s.isConsoleMuted('MER.11'), isTrue);
+      expect(s.isConsoleMuted('MER.11 '), isTrue); // tolera espacios
+      expect(s.isConsoleMuted('MER.1'), isFalse);
+      expect(s.isConsoleMuted(null), isFalse);
+    });
+
+    test('L10n.t devuelve el idioma configurado', () {
+      expect(const L10n('es').t('Consolas', 'Consoles'), 'Consolas');
+      expect(const L10n('en').t('Consolas', 'Consoles'), 'Consoles');
+      expect(const L10n('en').isEn, isTrue);
     });
 
     test('roundtrip OverfillAlert toJson/fromJson', () {

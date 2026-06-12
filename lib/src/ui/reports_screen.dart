@@ -1,4 +1,9 @@
 /// Generador de reportes: periodo + datasets + formato → archivo compartible.
+///
+/// El dataset "Despachos" (detalle completo de repostajes) se retiro de la UI
+/// a peticion del usuario: en periodos largos descargaba decenas de miles de
+/// registros y generaba conflictos. Los despachos siguen usandose
+/// INTERNAMENTE para calcular los sobrellenados SFL del periodo.
 library;
 
 import 'package:flutter/material.dart';
@@ -6,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../api/adaptiq_client.dart';
+import '../i18n/l10n.dart';
 import '../reports/report_service.dart';
 import '../state/providers.dart';
 
@@ -20,16 +26,16 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
   ReportPeriod _period = ReportPeriod.daily;
   ReportFormat _format = ReportFormat.csv;
   bool _deliveries = true;
-  bool _dispenses = false;
   bool _overfills = true;
 
   bool _busy = false;
   String _status = '';
 
   Future<void> _generate() async {
+    final l = L10n(ref.read(settingsProvider).languageCode);
     setState(() {
       _busy = true;
-      _status = 'Preparando…';
+      _status = l.t('Preparando…', 'Preparing…');
     });
     try {
       final service = ReportService(
@@ -41,7 +47,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
           period: _period,
           format: _format,
           includeDeliveries: _deliveries,
-          includeDispenses: _dispenses,
+          includeDispenses: false, // retirado de la UI (ver doc de la libreria)
           includeOverfills: _overfills,
         ),
         onProgress: (s) {
@@ -52,8 +58,9 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
       await Share.shareXFiles(result.files, text: result.summary);
     } on ApiException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('No se pudo generar: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content:
+              Text(l.t('No se pudo generar: $e', 'Could not generate: $e'))));
     } finally {
       if (mounted) {
         setState(() {
@@ -67,19 +74,22 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
+    final l = L10n(settings.languageCode);
     return Scaffold(
-      appBar: AppBar(title: const Text('Reportes')),
+      appBar: AppBar(title: Text(l.t('Reportes', 'Reports'))),
       body: !settings.isConfigured
-          ? const Center(
-              child: Text('Configura el token de la API primero.'))
+          ? Center(
+              child: Text(l.t('Configura el token de la API primero.',
+                  'Configure the API token first.')))
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                Text('Periodo', style: Theme.of(context).textTheme.titleMedium),
+                Text(l.t('Periodo', 'Period'),
+                    style: Theme.of(context).textTheme.titleMedium),
                 for (final p in ReportPeriod.values)
                   RadioListTile<ReportPeriod>(
                     dense: true,
-                    title: Text(p.label),
+                    title: Text(p.label(l)),
                     value: p,
                     groupValue: _period,
                     onChanged: _busy
@@ -90,9 +100,11 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Text(
-                      'El reporte anual descarga todo el año desde la API '
-                      '(paginado de a 100): puede tardar varios minutos, '
-                      'sobre todo con despachos incluidos.',
+                      l.t(
+                          'El reporte anual descarga todo el año desde la API '
+                              '(paginado de a 100): puede tardar varios minutos.',
+                          'The yearly report downloads the whole year from the '
+                              'API (paged by 100): it can take several minutes.'),
                       style: Theme.of(context)
                           .textTheme
                           .bodySmall
@@ -100,13 +112,13 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                     ),
                   ),
                 const Divider(height: 24),
-                Text('Contenido',
+                Text(l.t('Contenido', 'Content'),
                     style: Theme.of(context).textTheme.titleMedium),
                 CheckboxListTile(
                   dense: true,
-                  title: const Text('Entregas (deliveries)'),
-                  subtitle:
-                      const Text('Medido vs guia, varianza y estado'),
+                  title: Text(l.t('Entregas (deliveries)', 'Deliveries')),
+                  subtitle: Text(l.t('Medido vs guia, varianza y estado',
+                      'Metered vs docket, variance and status')),
                   value: _deliveries,
                   onChanged: _busy
                       ? null
@@ -114,26 +126,18 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                 ),
                 CheckboxListTile(
                   dense: true,
-                  title: const Text('Sobrellenados SFL'),
-                  subtitle: const Text(
-                      'Como el export de Alerts/Alarms (Equipment Overfill)'),
+                  title: Text(l.t('Sobrellenados SFL', 'SFL overfills')),
+                  subtitle: Text(l.t(
+                      'Como el export de Alerts/Alarms (Equipment Overfill)',
+                      'Like the Alerts/Alarms export (Equipment Overfill)')),
                   value: _overfills,
                   onChanged: _busy
                       ? null
                       : (v) => setState(() => _overfills = v ?? false),
                 ),
-                CheckboxListTile(
-                  dense: true,
-                  title: const Text('Despachos (dispenses)'),
-                  subtitle: const Text(
-                      'Detalle completo de repostajes — pesado en periodos largos'),
-                  value: _dispenses,
-                  onChanged: _busy
-                      ? null
-                      : (v) => setState(() => _dispenses = v ?? false),
-                ),
                 const Divider(height: 24),
-                Text('Formato', style: Theme.of(context).textTheme.titleMedium),
+                Text(l.t('Formato', 'Format'),
+                    style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
                 SegmentedButton<ReportFormat>(
                   segments: const [
@@ -154,21 +158,24 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                 const SizedBox(height: 24),
                 FilledButton.icon(
                   onPressed:
-                      _busy || !(_deliveries || _dispenses || _overfills)
-                          ? null
-                          : _generate,
+                      _busy || !(_deliveries || _overfills) ? null : _generate,
                   icon: _busy
                       ? const SizedBox(
                           width: 16,
                           height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.ios_share),
-                  label: Text(_busy ? _status : 'Generar y compartir'),
+                  label: Text(_busy
+                      ? _status
+                      : l.t('Generar y compartir', 'Generate and share')),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'El archivo se genera en el dispositivo y se abre la hoja '
-                  'de compartir del sistema (correo, WhatsApp, Drive, …).',
+                  l.t(
+                      'El archivo se genera en el dispositivo y se abre la hoja '
+                          'de compartir del sistema (correo, WhatsApp, Drive, …).',
+                      'The file is generated on the device and the system share '
+                          'sheet opens (mail, WhatsApp, Drive, …).'),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],

@@ -46,6 +46,9 @@ class AppStore {
   static const _kMonitorOverfill = 'cfg.monitorOverfill';
   static const _kMutedSfl = 'cfg.mutedSflProducts';
   static const _kMutedDeliveries = 'cfg.mutedDeliveryProducts';
+  static const _kMutedConsoles = 'cfg.mutedConsoles';
+  static const _kLanguage = 'cfg.languageCode';
+  static const _kThemeMode = 'cfg.themeMode';
 
   static const _kCacheSiteId = 'cache.resolvedSiteId';
   static const _kCacheMacFields = 'cache.adaptMacFields';
@@ -86,6 +89,9 @@ class AppStore {
       mutedSflProducts: _prefs.getStringList(_kMutedSfl) ?? const [],
       mutedDeliveryProducts:
           _prefs.getStringList(_kMutedDeliveries) ?? const [],
+      mutedConsoles: _prefs.getStringList(_kMutedConsoles) ?? const [],
+      languageCode: _prefs.getString(_kLanguage) ?? 'es',
+      themeMode: _prefs.getString(_kThemeMode) ?? 'dark',
     );
   }
 
@@ -104,6 +110,9 @@ class AppStore {
     await _prefs.setBool(_kMonitorOverfill, s.monitorOverfill);
     await _prefs.setStringList(_kMutedSfl, s.mutedSflProducts);
     await _prefs.setStringList(_kMutedDeliveries, s.mutedDeliveryProducts);
+    await _prefs.setStringList(_kMutedConsoles, s.mutedConsoles);
+    await _prefs.setString(_kLanguage, s.languageCode);
+    await _prefs.setString(_kThemeMode, s.themeMode);
   }
 
   /// Borra los descubrimientos contra la API. Llamar cuando cambia el

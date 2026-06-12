@@ -23,6 +23,7 @@ import '../core/delivery_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
 import '../core/util.dart';
+import '../i18n/l10n.dart';
 import '../models/delivery.dart';
 
 class NotificationService {
@@ -76,6 +77,7 @@ class NotificationService {
   Future<void> showEvents(List<ConsoleEvent> events, AppSettings settings) async {
     if (!_supported || events.isEmpty) return;
     await init();
+    final l = L10n(settings.languageCode);
 
     final raised = [for (final e in events) if (e.active) e];
     final cleared = [for (final e in events) if (!e.active) e];
@@ -90,7 +92,7 @@ class NotificationService {
       if (notify) {
         await _show(
           id: id,
-          title: _recoveryTitle(event),
+          title: _recoveryTitle(event, l),
           body: event.console.description ?? '',
           channel: _Channel.status,
         );
@@ -101,11 +103,13 @@ class NotificationService {
 
     if (raised.length > maxIndividual) {
       final lines = [
-        for (final e in raised) '${e.console.code} — ${_conditionLabel(e.condition)}',
+        for (final e in raised)
+          '${e.console.code} — ${_conditionLabel(e.condition, l)}',
       ];
       await _show(
         id: _summaryNotificationId,
-        title: '🔴 ${raised.length} consolas AdaptMAC con alertas',
+        title: l.t('🔴 ${raised.length} consolas AdaptMAC con alertas',
+            '🔴 ${raised.length} AdaptMAC consoles with alerts'),
         body: lines.join(' · '),
         channel: _Channel.critical,
         inboxLines: lines,
@@ -114,8 +118,8 @@ class NotificationService {
       for (final event in raised) {
         await _show(
           id: _idFor(event),
-          title: _alertTitle(event),
-          body: _alertBody(event),
+          title: _alertTitle(event, l),
+          body: _alertBody(event, l),
           channel: event.condition == ConsoleCondition.stale
               ? _Channel.warning
               : _Channel.critical,
@@ -134,6 +138,7 @@ class NotificationService {
       List<DeliveryEvent> events, AppSettings settings) async {
     if (!_supported || events.isEmpty) return;
     await init();
+    final l = L10n(settings.languageCode);
 
     final raised = [for (final e in events) if (e.active) e];
     final cleared = [for (final e in events) if (!e.active) e];
@@ -147,7 +152,8 @@ class NotificationService {
           settings.notifyRecovery) {
         await _show(
           id: id,
-          title: '🟢 Entrega ${event.delivery.label} confirmada',
+          title: l.t('🟢 Entrega ${event.delivery.label} confirmada',
+              '🟢 Delivery ${event.delivery.label} confirmed'),
           body: _deliveryContext(event.delivery),
           channel: _Channel.status,
         );
@@ -159,11 +165,12 @@ class NotificationService {
     if (raised.length > maxIndividual) {
       final lines = [
         for (final e in raised)
-          '${e.delivery.label} — ${_deliveryConditionLabel(e)}',
+          '${e.delivery.label} — ${_deliveryConditionLabel(e, l)}',
       ];
       await _show(
         id: _deliverySummaryNotificationId,
-        title: '⛽ ${raised.length} entregas con anomalias',
+        title: l.t('⛽ ${raised.length} entregas con anomalias',
+            '⛽ ${raised.length} deliveries with anomalies'),
         body: lines.join(' · '),
         channel: _Channel.critical,
         inboxLines: lines,
@@ -172,8 +179,8 @@ class NotificationService {
       for (final event in raised) {
         await _show(
           id: _deliveryIdFor(event),
-          title: _deliveryAlertTitle(event),
-          body: _deliveryAlertBody(event),
+          title: _deliveryAlertTitle(event, l),
+          body: _deliveryAlertBody(event, l),
           channel: event.condition == DeliveryCondition.unconfirmed ||
                   event.isCritical
               ? _Channel.critical
@@ -190,16 +197,18 @@ class NotificationService {
       List<OverfillAlert> alerts, AppSettings settings) async {
     if (!_supported || alerts.isEmpty) return;
     await init();
+    final l = L10n(settings.languageCode);
 
     if (alerts.length > maxIndividual) {
       final lines = [
         for (final o in alerts)
-          '${o.equipmentId} — exceso ${_litres.format(o.excess)} L'
+          '${o.equipmentId} — ${l.t('exceso', 'excess')} ${_litres.format(o.excess)} L'
               '${(o.product ?? '').isEmpty ? '' : ' (${o.product})'}',
       ];
       await _show(
         id: _overfillSummaryNotificationId,
-        title: '🛢️ ${alerts.length} sobrellenados de SFL',
+        title: l.t('🛢️ ${alerts.length} sobrellenados de SFL',
+            '🛢️ ${alerts.length} SFL overfills'),
         body: lines.join(' · '),
         channel: _Channel.critical,
         inboxLines: lines,
@@ -209,14 +218,16 @@ class NotificationService {
     for (final o in alerts) {
       await _show(
         id: stableId('overfill/${o.dispenseId}'),
-        title:
+        title: l.t(
             '🛢️ ${o.equipmentId} sobrellenado +${_litres.format(o.excess)} L',
+            '🛢️ ${o.equipmentId} overfill by ${_litres.format(o.excess)} L'),
         body: [
           if ((o.equipmentDescription ?? '').isNotEmpty)
             o.equipmentDescription!,
           if ((o.product ?? '').isNotEmpty) o.product!,
           '${_litres.format(o.volume)} L vs SFL ${_litres.format(o.sfl)} L',
-          if ((o.fieldUser ?? '').isNotEmpty) 'Operador: ${o.fieldUser}',
+          if ((o.fieldUser ?? '').isNotEmpty)
+            '${l.t('Operador', 'Operator')}: ${o.fieldUser}',
           if (o.collectedAt != null)
             DateFormat('dd/MM HH:mm').format(o.collectedAt!.toLocal()),
         ].join(' · '),
@@ -226,13 +237,15 @@ class NotificationService {
   }
 
   /// Notificacion de prueba desde la pantalla de configuracion.
-  Future<void> showTest() async {
+  Future<void> showTest(L10n l) async {
     if (!_supported) return;
     await init();
     await _show(
       id: 1,
-      title: '✅ Notificaciones operativas',
-      body: 'Asi se vera la alerta cuando una consola AdaptMAC pierda conexion.',
+      title: l.t('✅ Notificaciones operativas', '✅ Notifications working'),
+      body: l.t(
+          'Asi se vera la alerta cuando una consola AdaptMAC pierda conexion.',
+          'This is how the alert will look when an AdaptMAC console goes offline.'),
       channel: _Channel.status,
     );
   }
@@ -246,36 +259,44 @@ class NotificationService {
 
   static final NumberFormat _litres = NumberFormat('#,##0.0');
 
-  String _deliveryConditionLabel(DeliveryEvent e) =>
+  String _deliveryConditionLabel(DeliveryEvent e, L10n l) =>
       switch (e.condition) {
-        DeliveryCondition.unconfirmed => 'sin confirmar',
-        DeliveryCondition.highVariance =>
-          'varianza ${e.delivery.deviationPct?.toStringAsFixed(2) ?? '?'}%',
+        DeliveryCondition.unconfirmed => l.t('sin confirmar', 'unconfirmed'),
+        DeliveryCondition.highVariance => l.t(
+            'varianza ${e.delivery.deviationPct?.toStringAsFixed(2) ?? '?'}%',
+            'variance ${e.delivery.deviationPct?.toStringAsFixed(2) ?? '?'}%'),
       };
 
-  String _deliveryAlertTitle(DeliveryEvent e) => switch (e.condition) {
-        DeliveryCondition.unconfirmed =>
-          '🟡 Entrega ${e.delivery.label} sin confirmar',
-        DeliveryCondition.highVariance =>
-          '${e.isCritical ? '🔴' : '🟠'} Varianza '
-              '${e.delivery.deviationPct?.toStringAsFixed(2) ?? '?'}% '
-              'en entrega ${e.delivery.label}',
+  String _deliveryAlertTitle(DeliveryEvent e, L10n l) => switch (e.condition) {
+        DeliveryCondition.unconfirmed => l.t(
+            '🟡 Entrega ${e.delivery.label} sin confirmar',
+            '🟡 Delivery ${e.delivery.label} unconfirmed'),
+        DeliveryCondition.highVariance => l.t(
+            '${e.isCritical ? '🔴' : '🟠'} Varianza '
+                '${e.delivery.deviationPct?.toStringAsFixed(2) ?? '?'}% '
+                'en entrega ${e.delivery.label}',
+            '${e.isCritical ? '🔴' : '🟠'} Variance '
+                '${e.delivery.deviationPct?.toStringAsFixed(2) ?? '?'}% '
+                'on delivery ${e.delivery.label}'),
       };
 
-  String _deliveryAlertBody(DeliveryEvent e) {
+  String _deliveryAlertBody(DeliveryEvent e, L10n l) {
     final d = e.delivery;
     final parts = <String>[_deliveryContext(d)];
     final measured = d.volume, field = d.secondaryVolume;
     if (measured != null && field != null) {
-      parts.add(
-          'Medido ${_litres.format(measured)} L vs guia ${_litres.format(field)} L');
+      parts.add(l.t(
+          'Medido ${_litres.format(measured)} L vs guia ${_litres.format(field)} L',
+          'Metered ${_litres.format(measured)} L vs docket ${_litres.format(field)} L'));
       final dev = d.deviationL ?? 0;
       if (dev < 0) {
         // La guia reclama mas litros de los que entraron al tanque: el caso
         // de sobre-facturacion / entrega partida.
-        parts.add('faltan ${_litres.format(dev.abs())} L');
+        parts.add(l.t('faltan ${_litres.format(dev.abs())} L',
+            '${_litres.format(dev.abs())} L short'));
       } else if (dev > 0) {
-        parts.add('exceso de ${_litres.format(dev)} L sobre la guia');
+        parts.add(l.t('exceso de ${_litres.format(dev)} L sobre la guia',
+            '${_litres.format(dev)} L over the docket'));
       }
     }
     return parts.where((p) => p.isNotEmpty).join(' · ');
@@ -290,43 +311,53 @@ class NotificationService {
     ].join(' · ');
   }
 
-  String _conditionLabel(ConsoleCondition c) => switch (c) {
-        ConsoleCondition.offline => 'sin conexion',
-        ConsoleCondition.keyBypass => 'modo BYPASS',
-        ConsoleCondition.stale => 'comunicacion stale',
+  String _conditionLabel(ConsoleCondition c, L10n l) => switch (c) {
+        ConsoleCondition.offline => l.t('sin conexion', 'offline'),
+        ConsoleCondition.keyBypass => l.t('modo BYPASS', 'BYPASS mode'),
+        ConsoleCondition.stale => l.t('comunicacion stale', 'stale comms'),
       };
 
-  String _alertTitle(ConsoleEvent e) => switch (e.condition) {
-        ConsoleCondition.offline => '🔴 ${e.console.code} sin conexion',
-        ConsoleCondition.keyBypass => '🚨 ${e.console.code} en modo BYPASS',
-        ConsoleCondition.stale => '🟠 ${e.console.code} sin comunicar',
+  String _alertTitle(ConsoleEvent e, L10n l) => switch (e.condition) {
+        ConsoleCondition.offline => l.t('🔴 ${e.console.code} sin conexion',
+            '🔴 ${e.console.code} offline'),
+        ConsoleCondition.keyBypass => l.t(
+            '🚨 ${e.console.code} en modo BYPASS',
+            '🚨 ${e.console.code} in BYPASS mode'),
+        ConsoleCondition.stale => l.t('🟠 ${e.console.code} sin comunicar',
+            '🟠 ${e.console.code} not communicating'),
       };
 
-  String _alertBody(ConsoleEvent e) {
+  String _alertBody(ConsoleEvent e, L10n l) {
     final desc = e.console.description ?? '';
     switch (e.condition) {
       case ConsoleCondition.offline:
         final last = e.console.lastSuccessfulComms;
         final lastTxt = last == null
             ? ''
-            : ' · Ult. comunicacion ${DateFormat('dd/MM HH:mm').format(last.toLocal())}';
+            : ' · ${l.t('Ult. comunicacion', 'Last comms')} '
+                '${DateFormat('dd/MM HH:mm').format(last.toLocal())}';
         return '$desc$lastTxt'.trim();
       case ConsoleCondition.keyBypass:
-        return '$desc · La consola despacha sin autorizacion: trazabilidad comprometida.'
+        return '$desc · ${l.t('La consola despacha sin autorizacion: trazabilidad comprometida.', 'The console dispenses without authorisation: traceability compromised.')}'
             .trim();
       case ConsoleCondition.stale:
         final last = e.console.lastSuccessfulComms;
         final mins = last == null ? null : e.at.difference(last).inMinutes;
-        return '$desc · En linea pero sin comunicacion exitosa'
-                '${mins == null ? '' : ' hace $mins min'}.'
+        return '$desc · ${l.t('En linea pero sin comunicacion exitosa', 'Online but without successful comms')}'
+                '${mins == null ? '' : l.t(' hace $mins min', ' for $mins min')}.'
             .trim();
     }
   }
 
-  String _recoveryTitle(ConsoleEvent e) => switch (e.condition) {
-        ConsoleCondition.offline => '🟢 ${e.console.code} reconectada',
-        ConsoleCondition.keyBypass => '🟢 ${e.console.code} salio de modo BYPASS',
-        ConsoleCondition.stale => '🟢 ${e.console.code} comunicando de nuevo',
+  String _recoveryTitle(ConsoleEvent e, L10n l) => switch (e.condition) {
+        ConsoleCondition.offline => l.t('🟢 ${e.console.code} reconectada',
+            '🟢 ${e.console.code} back online'),
+        ConsoleCondition.keyBypass => l.t(
+            '🟢 ${e.console.code} salio de modo BYPASS',
+            '🟢 ${e.console.code} left BYPASS mode'),
+        ConsoleCondition.stale => l.t(
+            '🟢 ${e.console.code} comunicando de nuevo',
+            '🟢 ${e.console.code} communicating again'),
       };
 
   Future<void> _show({

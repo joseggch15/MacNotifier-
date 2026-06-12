@@ -82,6 +82,9 @@ class AppSettings {
     this.monitorOverfill = true,
     this.mutedSflProducts = const [],
     this.mutedDeliveryProducts = const [],
+    this.mutedConsoles = const [],
+    this.languageCode = 'es',
+    this.themeMode = 'dark',
   });
 
   /// Endpoint GraphQL del tenant.
@@ -130,11 +133,25 @@ class AppSettings {
   /// Productos SILENCIADOS para las alertas de entregas.
   final List<String> mutedDeliveryProducts;
 
+  /// Consolas AdaptMAC silenciadas (por codigo): el usuario puede apagar las
+  /// notificaciones de un MAC concreto (p. ej. los service trucks) sin dejar
+  /// de verlo en la pestaña Consolas.
+  final List<String> mutedConsoles;
+
+  /// Idioma de la UI y de las notificaciones: 'es' (defecto) o 'en'.
+  final String languageCode;
+
+  /// Tema visual: 'dark' (defecto), 'light' o 'system'.
+  final String themeMode;
+
   bool isSflProductMuted(String? product) =>
       mutedSflProducts.contains(normProduct(product));
 
   bool isDeliveryProductMuted(String? product) =>
       mutedDeliveryProducts.contains(normProduct(product));
+
+  bool isConsoleMuted(String? code) =>
+      code != null && mutedConsoles.contains(code.trim());
 
   /// Sin token no se puede hablar con la API real.
   bool get isConfigured => token.trim().isNotEmpty;
@@ -156,6 +173,9 @@ class AppSettings {
     bool? monitorOverfill,
     List<String>? mutedSflProducts,
     List<String>? mutedDeliveryProducts,
+    List<String>? mutedConsoles,
+    String? languageCode,
+    String? themeMode,
   }) {
     return AppSettings(
       endpoint: endpoint ?? this.endpoint,
@@ -173,6 +193,9 @@ class AppSettings {
       mutedSflProducts: mutedSflProducts ?? this.mutedSflProducts,
       mutedDeliveryProducts:
           mutedDeliveryProducts ?? this.mutedDeliveryProducts,
+      mutedConsoles: mutedConsoles ?? this.mutedConsoles,
+      languageCode: languageCode ?? this.languageCode,
+      themeMode: themeMode ?? this.themeMode,
     );
   }
 

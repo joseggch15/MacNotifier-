@@ -27,6 +27,16 @@ String relativeEs(DateTime dt, {DateTime? now}) {
   return 'hace ${diff.inDays} d';
 }
 
+/// Variante en ingles: "5 min ago" / "2 h ago" / "3 d ago".
+String relativeEn(DateTime dt, {DateTime? now}) {
+  var diff = (now ?? DateTime.now().toUtc()).difference(dt.toUtc());
+  if (diff.isNegative) diff = Duration.zero;
+  if (diff.inMinutes < 1) return 'seconds ago';
+  if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+  if (diff.inHours < 24) return '${diff.inHours} h ago';
+  return '${diff.inDays} d ago';
+}
+
 /// Identificador estable de 31 bits (FNV-1a) para ids de notificacion: la
 /// misma consola+condicion siempre mapea al mismo id, asi la recuperacion
 /// REEMPLAZA a la alerta en la bandeja en vez de apilarse.

@@ -18,6 +18,7 @@ import '../core/delivery_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
 import '../core/util.dart';
+import '../i18n/l10n.dart';
 import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
 import '../notifications/notification_service.dart';
@@ -49,6 +50,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final settings = ref.watch(settingsProvider);
     final board = ref.watch(consolesProvider);
     final syncError = ref.watch(lastSyncErrorProvider);
+    final l = L10n(settings.languageCode);
 
     return DefaultTabController(
       length: 3,
@@ -57,29 +59,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           title: const Text('AdaptIQ Monitor'),
           actions: [
             IconButton(
-              tooltip: 'Refrescar ahora',
+              tooltip: l.t('Refrescar ahora', 'Refresh now'),
               icon: const Icon(Icons.refresh),
               onPressed: () => ref.read(consolesProvider.notifier).refreshNow(),
             ),
             IconButton(
-              tooltip: 'Reportes',
+              tooltip: l.t('Reportes', 'Reports'),
               icon: const Icon(Icons.summarize_outlined),
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const ReportsScreen()),
               ),
             ),
             IconButton(
-              tooltip: 'Configuracion',
+              tooltip: l.t('Configuracion', 'Settings'),
               icon: const Icon(Icons.settings_outlined),
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
               ),
             ),
           ],
-          bottom: const TabBar(tabs: [
-            Tab(icon: Icon(Icons.dns_outlined), text: 'Consolas'),
-            Tab(icon: Icon(Icons.local_shipping_outlined), text: 'Entregas'),
-            Tab(icon: Icon(Icons.local_gas_station_outlined), text: 'SFL'),
+          bottom: TabBar(tabs: [
+            Tab(
+                icon: const Icon(Icons.dns_outlined),
+                text: l.t('Consolas', 'Consoles')),
+            Tab(
+                icon: const Icon(Icons.local_shipping_outlined),
+                text: l.t('Entregas', 'Deliveries')),
+            const Tab(icon: Icon(Icons.local_gas_station_outlined), text: 'SFL'),
           ]),
         ),
         body: !settings.isConfigured
@@ -92,11 +98,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
                       child: TextField(
                         onChanged: (v) => setState(() => _filter = v),
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           isDense: true,
-                          prefixIcon: Icon(Icons.search),
-                          hintText: 'Filtrar…',
-                          border: OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.search),
+                          hintText: l.t('Filtrar…', 'Filter…'),
+                          border: const OutlineInputBorder(),
                         ),
                       ),
                     ),
@@ -105,7 +111,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         _ConsolesTab(
                           result: result,
                           filter: _filter,
-                          staleAfter: settings.staleAfter,
+                          settings: settings,
                         ),
                         _DeliveriesTab(
                           result: result,
@@ -133,11 +139,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 }
 
 /// Sin token: guia al usuario a la configuracion en vez de mostrar un error.
-class _SetupPrompt extends StatelessWidget {
+class _SetupPrompt extends ConsumerWidget {
   const _SetupPrompt();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = L10n(ref.watch(settingsProvider).languageCode);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -147,15 +154,18 @@ class _SetupPrompt extends StatelessWidget {
             const Icon(Icons.vpn_key_outlined, size: 56),
             const SizedBox(height: 16),
             Text(
-              'Configura el token de la API de AdaptIQ para empezar a '
-              'monitorear las consolas y entregas del sitio.',
+              l.t(
+                  'Configura el token de la API de AdaptIQ para empezar a '
+                      'monitorear las consolas y entregas del sitio.',
+                  'Configure the AdaptIQ API token to start monitoring the '
+                      'site consoles and deliveries.'),
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyLarge,
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
               icon: const Icon(Icons.settings),
-              label: const Text('Abrir configuracion'),
+              label: Text(l.t('Abrir configuracion', 'Open settings')),
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
               ),
@@ -174,6 +184,7 @@ class _ErrorView extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final l = L10n(ref.watch(settingsProvider).languageCode);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -188,7 +199,7 @@ class _ErrorView extends ConsumerWidget {
             const SizedBox(height: 24),
             FilledButton.icon(
               icon: const Icon(Icons.refresh),
-              label: const Text('Reintentar'),
+              label: Text(l.t('Reintentar', 'Retry')),
               onPressed: () => ref.read(consolesProvider.notifier).refreshNow(),
             ),
           ],
@@ -199,14 +210,15 @@ class _ErrorView extends ConsumerWidget {
 }
 
 /// Franja LIVE / hora de actualizacion / banner de error compartida.
-class _SyncBar extends StatelessWidget {
+class _SyncBar extends ConsumerWidget {
   const _SyncBar({required this.result, required this.syncError});
 
   final HealthCheckResult result;
   final String? syncError;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = L10n(ref.watch(settingsProvider).languageCode);
     final live = syncError == null;
     final scheme = Theme.of(context).colorScheme;
     return Column(
@@ -217,14 +229,15 @@ class _SyncBar extends StatelessWidget {
             children: [
               Icon(Icons.circle, size: 12, color: live ? Colors.green : Colors.red),
               const SizedBox(width: 6),
-              Text(live ? 'LIVE' : 'SIN CONEXION',
+              Text(live ? 'LIVE' : l.t('SIN CONEXION', 'OFFLINE'),
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     color: live ? Colors.green : Colors.red,
                   )),
               const Spacer(),
               Text(
-                'Actualizado ${DateFormat('HH:mm:ss').format(result.fetchedAt.toLocal())}',
+                '${l.t('Actualizado', 'Updated')} '
+                '${DateFormat('HH:mm:ss').format(result.fetchedAt.toLocal())}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -240,7 +253,7 @@ class _SyncBar extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
             ),
             child: Text(
-              'Mostrando el ultimo estado conocido — $syncError',
+              '${l.t('Mostrando el ultimo estado conocido', 'Showing the last known state')} — $syncError',
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: scheme.onErrorContainer, fontSize: 12),
@@ -310,18 +323,30 @@ class _ConsolesTab extends ConsumerWidget {
   const _ConsolesTab({
     required this.result,
     required this.filter,
-    required this.staleAfter,
+    required this.settings,
   });
 
   final HealthCheckResult result;
   final String filter;
-  final Duration staleAfter;
+  final AppSettings settings;
+
+  /// Alterna el silenciado de UN MAC y lo persiste de inmediato (la campana
+  /// del tile): sin pasar por la pantalla de configuracion.
+  void _toggleMute(WidgetRef ref, String code) {
+    final s = ref.read(settingsProvider);
+    final muted = {...s.mutedConsoles};
+    if (!muted.add(code)) muted.remove(code);
+    ref
+        .read(settingsProvider.notifier)
+        .save(s.copyWith(mutedConsoles: muted.toList()..sort()));
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final l = L10n(settings.languageCode);
     final now = DateTime.now().toUtc();
     final conditions =
-        evaluateAll(result.consoles, staleAfter: staleAfter, now: now);
+        evaluateAll(result.consoles, staleAfter: settings.staleAfter, now: now);
 
     final query = filter.trim().toLowerCase();
     final visible = result.consoles.where((c) {
@@ -350,7 +375,7 @@ class _ConsolesTab extends ConsumerWidget {
             runSpacing: 8,
             children: [
               _Kpi(
-                label: 'En linea',
+                label: l.t('En linea', 'Online'),
                 value: '${result.onlineCount}/${result.total}',
                 color: result.onlineCount == result.total
                     ? Colors.green
@@ -376,9 +401,11 @@ class _ConsolesTab extends ConsumerWidget {
             onRefresh: () => ref.read(consolesProvider.notifier).refreshNow(),
             child: visible.isEmpty
                 ? ListView(
-                    children: const [
-                      SizedBox(height: 120),
-                      Center(child: Text('Sin consolas que mostrar.')),
+                    children: [
+                      const SizedBox(height: 120),
+                      Center(
+                          child: Text(l.t('Sin consolas que mostrar.',
+                              'No consoles to show.'))),
                     ],
                   )
                 : ListView.builder(
@@ -388,6 +415,9 @@ class _ConsolesTab extends ConsumerWidget {
                       console: visible[i],
                       conditions: conditions[visible[i].code] ?? const {},
                       now: now,
+                      l: l,
+                      muted: settings.isConsoleMuted(visible[i].code),
+                      onToggleMute: () => _toggleMute(ref, visible[i].code),
                     ),
                   ),
           ),
@@ -402,11 +432,19 @@ class _ConsoleTile extends StatelessWidget {
     required this.console,
     required this.conditions,
     required this.now,
+    required this.l,
+    required this.muted,
+    required this.onToggleMute,
   });
 
   final AdaptMac console;
   final Set<ConsoleCondition> conditions;
   final DateTime now;
+  final L10n l;
+
+  /// Notificaciones de ESTE MAC apagadas (la consola se sigue mostrando).
+  final bool muted;
+  final VoidCallback onToggleMute;
 
   Color get _statusColor {
     if (conditions.contains(ConsoleCondition.keyBypass)) return Colors.purpleAccent;
@@ -417,11 +455,13 @@ class _ConsoleTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final relative = l.isEn ? relativeEn : relativeEs;
     final subtitleParts = <String>[
       if ((console.description ?? '').isNotEmpty) console.description!,
       if ((console.site ?? '').isNotEmpty) console.site!,
       if (console.lastSuccessfulComms != null)
-        'Ult. com. ${relativeEs(console.lastSuccessfulComms!, now: now)}',
+        '${l.t('Ult. com.', 'Last comms')} '
+            '${relative(console.lastSuccessfulComms!, now: now)}',
     ];
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -440,12 +480,28 @@ class _ConsoleTile extends StatelessWidget {
             if (conditions.contains(ConsoleCondition.stale))
               const _Badge('STALE', Colors.orange),
             if (conditions.isEmpty) const _Badge('ONLINE', Colors.green),
+            if (muted) _Badge(l.t('SILENCIADO', 'MUTED'), Colors.blueGrey),
           ],
         ),
         subtitle: subtitleParts.isEmpty
             ? null
             : Text(subtitleParts.join(' · '),
                 maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: IconButton(
+          tooltip: muted
+              ? l.t('Reactivar notificaciones de ${console.code}',
+                  'Unmute ${console.code} notifications')
+              : l.t('Silenciar notificaciones de ${console.code}',
+                  'Mute ${console.code} notifications'),
+          icon: Icon(
+            muted
+                ? Icons.notifications_off_outlined
+                : Icons.notifications_active_outlined,
+            size: 20,
+            color: muted ? Colors.blueGrey : null,
+          ),
+          onPressed: onToggleMute,
+        ),
       ),
     );
   }
@@ -468,13 +524,17 @@ class _DeliveriesTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final l = L10n(settings.languageCode);
     if (!settings.monitorDeliveries) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(32),
+          padding: const EdgeInsets.all(32),
           child: Text(
-            'El monitoreo de entregas esta desactivado.\n'
-            'Activalo en Configuracion → Entregas.',
+            l.t(
+                'El monitoreo de entregas esta desactivado.\n'
+                    'Activalo en Configuracion → Entregas.',
+                'Delivery monitoring is disabled.\n'
+                    'Enable it in Settings → Deliveries.'),
             textAlign: TextAlign.center,
           ),
         ),
@@ -527,17 +587,19 @@ class _DeliveriesTab extends ConsumerWidget {
             runSpacing: 8,
             children: [
               _Kpi(
-                label: 'Entregas ${kDeliveryKeepDays}d',
+                label: l.t('Entregas ${kDeliveryKeepDays}d',
+                    'Deliveries ${kDeliveryKeepDays}d'),
                 value: '${result.deliveries.length}',
                 color: Colors.blue,
               ),
               _Kpi(
-                label: 'Sin confirmar',
+                label: l.t('Sin confirmar', 'Unconfirmed'),
                 value: '$unconfirmed',
                 color: unconfirmed == 0 ? Colors.green : Colors.amber,
               ),
               _Kpi(
-                label: 'Varianza ≥${settings.varianceThresholdPct.toStringAsFixed(settings.varianceThresholdPct % 1 == 0 ? 0 : 1)}%',
+                label:
+                    '${l.t('Varianza', 'Variance')} ≥${settings.varianceThresholdPct.toStringAsFixed(settings.varianceThresholdPct % 1 == 0 ? 0 : 1)}%',
                 value: '$flaggedVariance',
                 color: flaggedVariance == 0 ? Colors.green : Colors.red,
               ),
@@ -549,11 +611,12 @@ class _DeliveriesTab extends ConsumerWidget {
             onRefresh: () => ref.read(consolesProvider.notifier).refreshNow(),
             child: visible.isEmpty
                 ? ListView(
-                    children: const [
-                      SizedBox(height: 120),
+                    children: [
+                      const SizedBox(height: 120),
                       Center(
-                          child: Text(
-                              'Sin entregas en la ventana local todavia.')),
+                          child: Text(l.t(
+                              'Sin entregas en la ventana local todavia.',
+                              'No deliveries in the local window yet.'))),
                     ],
                   )
                 : ListView.builder(
@@ -563,6 +626,7 @@ class _DeliveriesTab extends ConsumerWidget {
                       delivery: visible[i],
                       conditions:
                           conditionsById[visible[i].id] ?? const {},
+                      l: l,
                     ),
                   ),
           ),
@@ -573,10 +637,15 @@ class _DeliveriesTab extends ConsumerWidget {
 }
 
 class _DeliveryTile extends StatelessWidget {
-  const _DeliveryTile({required this.delivery, required this.conditions});
+  const _DeliveryTile({
+    required this.delivery,
+    required this.conditions,
+    required this.l,
+  });
 
   final Delivery delivery;
   final Set<DeliveryCondition> conditions;
+  final L10n l;
 
   static final NumberFormat _litres = NumberFormat('#,##0.0');
 
@@ -591,9 +660,12 @@ class _DeliveryTile extends StatelessWidget {
             : Colors.orange;
 
     final volumes = (d.volume != null && d.secondaryVolume != null)
-        ? 'Medido ${_litres.format(d.volume)} L / Guia ${_litres.format(d.secondaryVolume)} L'
+        ? l.t(
+            'Medido ${_litres.format(d.volume)} L / Guia ${_litres.format(d.secondaryVolume)} L',
+            'Metered ${_litres.format(d.volume)} L / Docket ${_litres.format(d.secondaryVolume)} L')
         : d.volume != null
-            ? 'Medido ${_litres.format(d.volume)} L'
+            ? l.t('Medido ${_litres.format(d.volume)} L',
+                'Metered ${_litres.format(d.volume)} L')
             : null;
     final when = d.collectedAt;
 
@@ -610,7 +682,8 @@ class _DeliveryTile extends StatelessWidget {
                   style: const TextStyle(fontWeight: FontWeight.bold)),
             ),
             const SizedBox(width: 8),
-            if (d.isUnconfirmed) const _Badge('SIN CONFIRMAR', Colors.amber),
+            if (d.isUnconfirmed)
+              _Badge(l.t('SIN CONFIRMAR', 'UNCONFIRMED'), Colors.amber),
             if (conditions.contains(DeliveryCondition.highVariance))
               _Badge(
                 '▼ ${d.deviationPct!.toStringAsFixed(2)}%',
@@ -654,13 +727,17 @@ class _OverfillTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final l = L10n(settings.languageCode);
     if (!settings.monitorOverfill) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(32),
+          padding: const EdgeInsets.all(32),
           child: Text(
-            'El monitoreo de sobrellenados SFL esta desactivado.\n'
-            'Activalo en Configuracion → Sobrellenados SFL.',
+            l.t(
+                'El monitoreo de sobrellenados SFL esta desactivado.\n'
+                    'Activalo en Configuracion → Sobrellenados SFL.',
+                'SFL overfill monitoring is disabled.\n'
+                    'Enable it in Settings → SFL overfills.'),
             textAlign: TextAlign.center,
           ),
         ),
@@ -690,18 +767,19 @@ class _OverfillTab extends ConsumerWidget {
             runSpacing: 8,
             children: [
               _Kpi(
-                label: 'Excesos ${kOverfillKeepDays}d',
+                label: l.t('Excesos ${kOverfillKeepDays}d',
+                    'Overfills ${kOverfillKeepDays}d'),
                 value: '${visible.length}',
                 color: visible.isEmpty ? Colors.green : Colors.red,
               ),
               _Kpi(
-                label: 'Exceso total',
+                label: l.t('Exceso total', 'Total excess'),
                 value: '${_litres.format(totalExcess)} L',
                 color: totalExcess == 0 ? Colors.green : Colors.orange,
               ),
               if (mutedCount > 0)
                 _Kpi(
-                  label: 'Silenciados',
+                  label: l.t('Silenciados', 'Muted'),
                   value: '$mutedCount',
                   color: Colors.blueGrey,
                 ),
@@ -713,11 +791,12 @@ class _OverfillTab extends ConsumerWidget {
             onRefresh: () => ref.read(consolesProvider.notifier).refreshNow(),
             child: visible.isEmpty
                 ? ListView(
-                    children: const [
-                      SizedBox(height: 120),
+                    children: [
+                      const SizedBox(height: 120),
                       Center(
-                          child: Text(
-                              'Sin sobrellenados de SFL en la ventana local.')),
+                          child: Text(l.t(
+                              'Sin sobrellenados de SFL en la ventana local.',
+                              'No SFL overfills in the local window.'))),
                     ],
                   )
                 : ListView.builder(
@@ -727,6 +806,7 @@ class _OverfillTab extends ConsumerWidget {
                       alert: visible[i],
                       muted:
                           settings.isSflProductMuted(visible[i].product),
+                      l: l,
                     ),
                   ),
           ),
@@ -737,10 +817,15 @@ class _OverfillTab extends ConsumerWidget {
 }
 
 class _OverfillTile extends StatelessWidget {
-  const _OverfillTile({required this.alert, required this.muted});
+  const _OverfillTile({
+    required this.alert,
+    required this.muted,
+    required this.l,
+  });
 
   final OverfillAlert alert;
   final bool muted;
+  final L10n l;
 
   static final NumberFormat _litres = NumberFormat('#,##0.0');
 
@@ -769,7 +854,7 @@ class _OverfillTile extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             _Badge('+${_litres.format(o.excess)} L', color),
-            if (muted) const _Badge('SILENCIADO', Colors.blueGrey),
+            if (muted) _Badge(l.t('SILENCIADO', 'MUTED'), Colors.blueGrey),
           ],
         ),
         subtitle: Text(

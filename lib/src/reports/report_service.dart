@@ -29,6 +29,7 @@ import '../api/adaptiq_client.dart';
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/sfl_check.dart';
+import '../i18n/l10n.dart';
 import '../models/delivery.dart';
 import '../models/dispense.dart';
 import '../storage/app_store.dart';
@@ -38,11 +39,14 @@ enum ReportPeriod { daily, weekly, monthly, yearly }
 enum ReportFormat { csv, pdf }
 
 extension ReportPeriodX on ReportPeriod {
-  String get label => switch (this) {
-        ReportPeriod.daily => 'Diario (hoy)',
-        ReportPeriod.weekly => 'Semanal (ultimos 7 dias)',
-        ReportPeriod.monthly => 'Mensual (mes actual)',
-        ReportPeriod.yearly => 'Anual (año actual)',
+  String label(L10n l) => switch (this) {
+        ReportPeriod.daily => l.t('Diario (hoy)', 'Daily (today)'),
+        ReportPeriod.weekly =>
+          l.t('Semanal (ultimos 7 dias)', 'Weekly (last 7 days)'),
+        ReportPeriod.monthly =>
+          l.t('Mensual (mes actual)', 'Monthly (current month)'),
+        ReportPeriod.yearly =>
+          l.t('Anual (año actual)', 'Yearly (current year)'),
       };
 
   String get slug => switch (this) {
@@ -127,8 +131,10 @@ class ReportService {
     ReportRequest request, {
     void Function(String status)? onProgress,
   }) async {
+    final l = L10n(_settings.languageCode);
     if (!request.hasAnyDataset) {
-      throw const ApiException('Selecciona al menos un dataset.');
+      throw ApiException(l.t(
+          'Selecciona al menos un dataset.', 'Select at least one dataset.'));
     }
     final nowLocal = DateTime.now();
     final range = request.period.range(nowLocal);
@@ -144,7 +150,7 @@ class ReportService {
     List<OverfillAlert> overfills = const [];
     try {
       if (request.includeDeliveries) {
-        onProgress?.call('Descargando entregas…');
+        onProgress?.call(l.t('Descargando entregas…', 'Downloading deliveries…'));
         deliveries = (await client.fetchDeliveries(updatedFrom: range.start))
             .where((d) => _inRange(d.collectedAt, range))
             .toList()
@@ -152,7 +158,7 @@ class ReportService {
               .compareTo(a.collectedAt ?? DateTime(0)));
       }
       if (request.includeDispenses || request.includeOverfills) {
-        onProgress?.call('Descargando despachos…');
+        onProgress?.call(l.t('Descargando despachos…', 'Downloading dispenses…'));
         dispenses = (await client.fetchDispenses(updatedFrom: range.start))
             .where((d) => _inRange(d.collectedAt, range))
             .toList()
@@ -160,7 +166,8 @@ class ReportService {
               .compareTo(a.collectedAt ?? DateTime(0)));
       }
       if (request.includeOverfills) {
-        onProgress?.call('Cruzando despachos contra SFL…');
+        onProgress?.call(
+            l.t('Cruzando despachos contra SFL…', 'Checking dispenses vs SFL…'));
         var limits = _store.loadSflLimits();
         if (limits == null || limits.isEmpty) {
           limits = await client.fetchSflLimits();
@@ -178,7 +185,8 @@ class ReportService {
       client.close();
     }
 
-    onProgress?.call('Generando ${request.format.name.toUpperCase()}…');
+    onProgress?.call(l.t('Generando ${request.format.name.toUpperCase()}…',
+        'Building ${request.format.name.toUpperCase()}…'));
     final dir = await getTemporaryDirectory();
     final stamp = DateFormat('yyyy-MM-dd_HHmm').format(nowLocal);
     final base = 'adaptiq_${request.period.slug}_$stamp';
@@ -212,11 +220,15 @@ class ReportService {
     }
 
     final summary = [
-      'Reporte ${request.period.slug} '
-          '(${_dt.format(range.start.toLocal())} → ${_dt.format(range.end.toLocal())})',
-      if (request.includeDeliveries) '${deliveries.length} entregas',
-      if (request.includeDispenses) '${dispenses.length} despachos',
-      if (request.includeOverfills) '${overfills.length} sobrellenados SFL',
+      '${l.t('Reporte ${request.period.slug}', '${request.period.slug} report')}'
+          ' (${_dt.format(range.start.toLocal())} → ${_dt.format(range.end.toLocal())})',
+      if (request.includeDeliveries)
+        l.t('${deliveries.length} entregas', '${deliveries.length} deliveries'),
+      if (request.includeDispenses)
+        l.t('${dispenses.length} despachos', '${dispenses.length} dispenses'),
+      if (request.includeOverfills)
+        l.t('${overfills.length} sobrellenados SFL',
+            '${overfills.length} SFL overfills'),
     ].join(' · ');
     return ReportResult(files: files, summary: summary);
   }
@@ -297,6 +309,7 @@ class ReportService {
     required List<OverfillAlert> overfills,
     required DateTime generatedAt,
   }) async {
+    final l = L10n(_settings.languageCode);
     final doc = pw.Document();
     final titleStyle =
         pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold);
@@ -325,8 +338,11 @@ class ReportService {
           pw.Padding(
             padding: const pw.EdgeInsets.only(top: 4),
             child: pw.Text(
-              'Mostrando $_pdfMaxRows de ${rows.length - 1} filas — '
-              'usa el formato CSV para el detalle completo.',
+              l.t(
+                  'Mostrando $_pdfMaxRows de ${rows.length - 1} filas — '
+                      'usa el formato CSV para el detalle completo.',
+                  'Showing $_pdfMaxRows of ${rows.length - 1} rows — '
+                      'use the CSV format for the full detail.'),
               style: const pw.TextStyle(fontSize: 7),
             ),
           ),
@@ -345,52 +361,64 @@ class ReportService {
       header: (ctx) => pw.Padding(
         padding: const pw.EdgeInsets.only(bottom: 6),
         child: pw.Text(
-          'AdaptIQ Monitor — sitio ${_settings.siteMatch} — '
-          'pagina ${ctx.pageNumber}/${ctx.pagesCount}',
+          l.t(
+              'AdaptIQ Monitor — sitio ${_settings.siteMatch} — '
+                  'pagina ${ctx.pageNumber}/${ctx.pagesCount}',
+              'AdaptIQ Monitor — site ${_settings.siteMatch} — '
+                  'page ${ctx.pageNumber}/${ctx.pagesCount}'),
           style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey700),
         ),
       ),
       build: (ctx) => [
-        pw.Text('Reporte ${request.period.slug} de combustible (FMS)',
+        pw.Text(
+            l.t('Reporte ${request.period.slug} de combustible (FMS)',
+                'Fuel report — ${request.period.slug} (FMS)'),
             style: titleStyle),
         pw.SizedBox(height: 4),
         pw.Text(
-          'Periodo: ${_dt.format(range.start.toLocal())} → '
+          '${l.t('Periodo', 'Period')}: ${_dt.format(range.start.toLocal())} → '
           '${_dt.format(range.end.toLocal())}   ·   '
-          'Generado: ${_dt.format(generatedAt)}',
+          '${l.t('Generado', 'Generated')}: ${_dt.format(generatedAt)}',
           style: const pw.TextStyle(fontSize: 9),
         ),
         pw.SizedBox(height: 8),
         pw.Bullet(
             text: request.includeDeliveries
-                ? 'Entregas: ${deliveries.length} ($flagged con anomalias)'
-                : 'Entregas: (no incluidas)',
+                ? l.t('Entregas: ${deliveries.length} ($flagged con anomalias)',
+                    'Deliveries: ${deliveries.length} ($flagged with anomalies)')
+                : l.t('Entregas: (no incluidas)', 'Deliveries: (not included)'),
             style: const pw.TextStyle(fontSize: 9)),
         if (request.includeDispenses)
           pw.Bullet(
-              text: 'Despachos: ${dispenses.length}',
+              text: l.t('Despachos: ${dispenses.length}',
+                  'Dispenses: ${dispenses.length}'),
               style: const pw.TextStyle(fontSize: 9)),
         if (request.includeOverfills)
           pw.Bullet(
-              text: 'Sobrellenados SFL: ${overfills.length} '
-                  '(exceso total ${_num.format(overfills.fold<double>(0, (acc, o) => acc + o.excess))} L)',
+              text: l.t(
+                  'Sobrellenados SFL: ${overfills.length} '
+                      '(exceso total ${_num.format(overfills.fold<double>(0, (acc, o) => acc + o.excess))} L)',
+                  'SFL overfills: ${overfills.length} '
+                      '(total excess ${_num.format(overfills.fold<double>(0, (acc, o) => acc + o.excess))} L)'),
               style: const pw.TextStyle(fontSize: 9)),
         if (request.includeDeliveries) ...[
           pw.SizedBox(height: 12),
-          pw.Text('Entregas', style: sectionStyle),
+          pw.Text(l.t('Entregas', 'Deliveries'), style: sectionStyle),
           pw.SizedBox(height: 4),
           table(_deliveryRows(deliveries)),
         ],
         if (request.includeOverfills) ...[
           pw.SizedBox(height: 12),
-          pw.Text('Sobrellenados SFL (Equipment Overfill)',
+          pw.Text(
+              l.t('Sobrellenados SFL (Equipment Overfill)',
+                  'SFL overfills (Equipment Overfill)'),
               style: sectionStyle),
           pw.SizedBox(height: 4),
           table(_overfillRows(overfills)),
         ],
         if (request.includeDispenses) ...[
           pw.SizedBox(height: 12),
-          pw.Text('Despachos', style: sectionStyle),
+          pw.Text(l.t('Despachos', 'Dispenses'), style: sectionStyle),
           pw.SizedBox(height: 4),
           table(_dispenseRows(dispenses)),
         ],

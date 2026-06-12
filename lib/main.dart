@@ -35,16 +35,31 @@ Future<void> main() async {
   );
 }
 
-class AdaptMacNotifierApp extends StatelessWidget {
+class AdaptMacNotifierApp extends ConsumerWidget {
   const AdaptMacNotifierApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    // Tema oscuro para hermanar con el dashboard de escritorio MSGQ.
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(settingsProvider);
+    // Oscuro por defecto (hermana con el dashboard MSGQ); claro y sistema
+    // disponibles desde Configuracion → Apariencia.
+    final themeMode = switch (settings.themeMode) {
+      'light' => ThemeMode.light,
+      'system' => ThemeMode.system,
+      _ => ThemeMode.dark,
+    };
     return MaterialApp(
       title: 'AdaptMAC Monitor',
       debugShowCheckedModeBanner: false,
+      themeMode: themeMode,
       theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF1E6FD9),
+          brightness: Brightness.light,
+        ),
+      ),
+      darkTheme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF1E6FD9),

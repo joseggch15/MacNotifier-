@@ -15,7 +15,11 @@ familias de anomalías:
 
 Además genera **reportes diarios/semanales/mensuales/anuales en CSV o PDF**
 (estilo exports de AdaptIQ) compartibles por la hoja del sistema, y permite
-**silenciar las notificaciones por producto** (p. ej. dejar solo el diesel).
+**silenciar las notificaciones por producto** (p. ej. dejar solo el diesel) y
+**por consola individual** (p. ej. apagar los service trucks con la campanita
+de cada tile). UI bilingüe **español/inglés** y tema **oscuro/claro/sistema**,
+ambos configurables en Ajustes → Apariencia (las notificaciones también salen
+en el idioma elegido).
 
 No hay servidor intermedio: la app habla directamente con la API GraphQL.
 
@@ -62,25 +66,34 @@ editado. Primera sincronización: ventana de 3 días hacia atrás; la pestaña
   que MSGQ); los despachos van incrementales con su propio watermark. Un
   sobrellenado es un evento puntual: se notifica una sola vez por despacho.
 
-### Silenciado por producto
+### Silenciado por producto y por consola
 
 En Configuración se pueden **silenciar productos** por dominio (chips que se
-pueblan solos con los productos vistos en los datos): un producto silenciado
-no notifica anomalías de entrega ni sobrellenados SFL, pero **sigue visible**
-en las pestañas (con marca de silenciado en SFL). El estado de deduplicación
-se mantiene completo, así que silenciar/des-silenciar no re-dispara alertas
-viejas.
+pueblan solos con los productos vistos en los datos) y **consolas AdaptMAC
+individuales** (chips en Ajustes, o directamente la campanita 🔔 de cada tile
+en la pestaña Consolas — útil para los service trucks). Lo silenciado no
+notifica pero **sigue visible** en las pestañas (con marca de silenciado). El
+estado de deduplicación se mantiene completo, así que silenciar/des-silenciar
+no re-dispara alertas viejas.
 
 ### Reportes (CSV / PDF)
 
 Desde el icono 📄 de la barra: periodo (hoy / últimos 7 días / mes actual /
-año actual) × contenido (entregas, despachos, sobrellenados SFL) × formato.
-El reporte consulta la API en vivo (no la ventana local), filtra por
-`recordCollectedAt` dentro del periodo y entrega los archivos a la hoja de
-compartir (correo, WhatsApp, Drive…). CSV: un archivo por dataset; PDF: un
-documento con resumen + tablas (cap de 600 filas por tabla — el detalle
-completo es dominio del CSV). El anual con despachos puede tardar varios
-minutos (paginado de a 100 con throttle).
+año actual) × contenido (entregas, sobrellenados SFL) × formato. El dataset
+"Despachos" se retiró de la UI (en periodos largos descargaba decenas de
+miles de filas); los despachos se siguen usando internamente para calcular
+los sobrellenados. El reporte consulta la API en vivo (no la ventana local),
+filtra por `recordCollectedAt` dentro del periodo y entrega los archivos a la
+hoja de compartir (correo, WhatsApp, Drive…). CSV: un archivo por dataset;
+PDF: un documento con resumen + tablas (cap de 600 filas por tabla — el
+detalle completo es dominio del CSV). El anual puede tardar varios minutos
+(paginado de a 100 con throttle).
+
+### Idioma y tema
+
+`Ajustes → Apariencia`: idioma **Español/English** (UI + notificaciones,
+implementado con un helper `L10n.t(es, en)` sin codegen — funciona también en
+el isolate de background) y tema **Oscuro/Claro/Según el sistema**.
 
 ### Deduplicación
 

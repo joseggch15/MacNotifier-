@@ -1,4 +1,5 @@
-/// Configuracion: token/endpoint/sitio + cadencias + notificaciones.
+/// Configuracion: conexion + apariencia (idioma/tema) + cadencias +
+/// monitoreos + silenciados (por producto y por consola) + notificaciones.
 ///
 /// "Probar conexion" ejecuta la query `sites` con lo que hay EN EL FORMULARIO
 /// (sin guardar), igual que el dialogo de conexion de MSGQ: valida token y
@@ -10,6 +11,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/adaptiq_client.dart';
 import '../config/app_settings.dart';
+import '../core/util.dart';
+import '../i18n/l10n.dart';
+import '../models/adapt_mac.dart';
 import '../notifications/notification_service.dart';
 import '../state/providers.dart';
 
@@ -37,7 +41,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late bool _monitorOverfill;
   late Set<String> _mutedSfl;
   late Set<String> _mutedDeliveries;
+  late Set<String> _mutedConsoles;
   late List<String> _knownProducts;
+  late List<String> _knownConsoles;
+  late String _languageCode;
+  late String _themeMode;
 
   bool _tokenVisible = false;
   bool _testing = false;
@@ -60,14 +68,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _monitorOverfill = s.monitorOverfill;
     _mutedSfl = s.mutedSflProducts.toSet();
     _mutedDeliveries = s.mutedDeliveryProducts.toSet();
+    _mutedConsoles = s.mutedConsoles.toSet();
+    _languageCode = s.languageCode;
+    _themeMode = s.themeMode;
+    final store = ref.read(appStoreProvider);
     // Productos vistos en los datos + los ya silenciados (por si un producto
     // silenciado dejo de aparecer: debe poder des-silenciarse igual).
     _knownProducts = {
-      ...ref.read(appStoreProvider).knownProducts,
+      ...store.knownProducts,
       ..._mutedSfl,
       ..._mutedDeliveries,
     }.toList()
       ..sort();
+    // Consolas del ultimo snapshot + las ya silenciadas.
+    final snapshotConsoles =
+        store.loadSnapshot()?.consoles ?? const <AdaptMac>[];
+    _knownConsoles = <String>{
+      for (final c in snapshotConsoles) c.code,
+      ..._mutedConsoles,
+    }.toList()
+      ..sort(naturalCompare);
   }
 
   @override
@@ -78,6 +98,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _siteId.dispose();
     super.dispose();
   }
+
+  L10n get _l => L10n(_languageCode);
 
   AppSettings _fromForm() => ref.read(settingsProvider).copyWith(
         endpoint: _endpoint.text.trim(),
@@ -94,19 +116,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         monitorOverfill: _monitorOverfill,
         mutedSflProducts: _mutedSfl.toList()..sort(),
         mutedDeliveryProducts: _mutedDeliveries.toList()..sort(),
+        mutedConsoles: _mutedConsoles.toList()..sort(),
+        languageCode: _languageCode,
+        themeMode: _themeMode,
       );
 
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    final l = _l;
     await ref.read(settingsProvider.notifier).save(_fromForm());
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Configuracion guardada.')),
+      SnackBar(content: Text(l.t('Configuracion guardada.', 'Settings saved.'))),
     );
     Navigator.of(context).pop();
   }
 
   Future<void> _testConnection() async {
+    final l = _l;
     setState(() => _testing = true);
     final client = AdaptIQClient(_fromForm());
     try {
@@ -121,19 +148,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: Text('Conexion OK — ${sites.length} sitio(s)'),
-          content: Text(lines.isEmpty ? 'El token no ve ningun sitio.' : lines),
+          title: Text(l.t('Conexion OK — ${sites.length} sitio(s)',
+              'Connection OK — ${sites.length} site(s)')),
+          content: Text(lines.isEmpty
+              ? l.t('El token no ve ningun sitio.', 'The token sees no sites.')
+              : lines),
           actions: [
             TextButton(
                 onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Cerrar')),
+                child: Text(l.t('Cerrar', 'Close'))),
           ],
         ),
       );
     } on ApiException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Fallo la conexion: $e')),
+        SnackBar(
+            content:
+                Text(l.t('Fallo la conexion: $e', 'Connection failed: $e'))),
       );
     } finally {
       client.close();
@@ -143,27 +175,64 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = _l;
     return Scaffold(
-      appBar: AppBar(title: const Text('Configuracion')),
+      appBar: AppBar(title: Text(l.t('Configuracion', 'Settings'))),
       body: Form(
         key: _formKey,
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            Text('Conexion AdaptIQ',
+            // ---- Apariencia -----------------------------------------------------
+            Text(l.t('Apariencia', 'Appearance'),
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: _languageCode,
+              decoration: InputDecoration(
+                labelText: l.t('Idioma', 'Language'),
+                border: const OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'es', child: Text('Español')),
+                DropdownMenuItem(value: 'en', child: Text('English')),
+              ],
+              onChanged: (v) => setState(() => _languageCode = v ?? 'es'),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: _themeMode,
+              decoration: InputDecoration(
+                labelText: l.t('Tema', 'Theme'),
+                border: const OutlineInputBorder(),
+              ),
+              items: [
+                DropdownMenuItem(
+                    value: 'dark', child: Text(l.t('Oscuro', 'Dark'))),
+                DropdownMenuItem(
+                    value: 'light', child: Text(l.t('Claro', 'Light'))),
+                DropdownMenuItem(
+                    value: 'system',
+                    child: Text(l.t('Segun el sistema', 'Follow system'))),
+              ],
+              onChanged: (v) => setState(() => _themeMode = v ?? 'dark'),
+            ),
+            const Divider(height: 32),
+            // ---- Conexion -------------------------------------------------------
+            Text(l.t('Conexion AdaptIQ', 'AdaptIQ connection'),
                 style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             TextFormField(
               controller: _endpoint,
-              decoration: const InputDecoration(
-                labelText: 'Endpoint GraphQL',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                labelText: l.t('Endpoint GraphQL', 'GraphQL endpoint'),
+                border: const OutlineInputBorder(),
               ),
               keyboardType: TextInputType.url,
               validator: (v) {
                 final uri = Uri.tryParse((v ?? '').trim());
                 if (uri == null || !uri.isAbsolute || !uri.scheme.startsWith('http')) {
-                  return 'URL invalida';
+                  return l.t('URL invalida', 'Invalid URL');
                 }
                 return null;
               },
@@ -173,8 +242,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               controller: _token,
               obscureText: !_tokenVisible,
               decoration: InputDecoration(
-                labelText: 'Token de la API',
-                helperText: 'Viaja como  Authorization: Token token=<token>',
+                labelText: l.t('Token de la API', 'API token'),
+                helperText: l.t('Viaja como  Authorization: Token token=<token>',
+                    'Sent as  Authorization: Token token=<token>'),
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
                   icon: Icon(
@@ -182,8 +252,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   onPressed: () => setState(() => _tokenVisible = !_tokenVisible),
                 ),
               ),
-              validator: (v) =>
-                  (v ?? '').trim().isEmpty ? 'El token es obligatorio' : null,
+              validator: (v) => (v ?? '').trim().isEmpty
+                  ? l.t('El token es obligatorio', 'The token is required')
+                  : null,
             ),
             const SizedBox(height: 12),
             Row(
@@ -191,9 +262,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 Expanded(
                   child: TextFormField(
                     controller: _siteMatch,
-                    decoration: const InputDecoration(
-                      labelText: 'Sitio (texto a buscar)',
-                      border: OutlineInputBorder(),
+                    decoration: InputDecoration(
+                      labelText: l.t('Sitio (texto a buscar)',
+                          'Site (text to match)'),
+                      border: const OutlineInputBorder(),
                     ),
                   ),
                 ),
@@ -201,9 +273,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 Expanded(
                   child: TextFormField(
                     controller: _siteId,
-                    decoration: const InputDecoration(
-                      labelText: 'Site ID (opcional)',
-                      border: OutlineInputBorder(),
+                    decoration: InputDecoration(
+                      labelText: l.t('Site ID (opcional)', 'Site ID (optional)'),
+                      border: const OutlineInputBorder(),
                     ),
                   ),
                 ),
@@ -218,64 +290,103 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.wifi_tethering),
-              label: const Text('Probar conexion'),
+              label: Text(l.t('Probar conexion', 'Test connection')),
             ),
             const Divider(height: 32),
-            Text('Cadencias', style: Theme.of(context).textTheme.titleMedium),
+            // ---- Cadencias ------------------------------------------------------
+            Text(l.t('Cadencias', 'Polling'),
+                style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             DropdownButtonFormField<int>(
               value: _pollSeconds,
-              decoration: const InputDecoration(
-                labelText: 'Polling con la app abierta',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                labelText:
+                    l.t('Polling con la app abierta', 'Polling while app open'),
+                border: const OutlineInputBorder(),
               ),
-              items: const [
-                DropdownMenuItem(value: 10, child: Text('Cada 10 segundos')),
-                DropdownMenuItem(value: 20, child: Text('Cada 20 segundos')),
-                DropdownMenuItem(value: 30, child: Text('Cada 30 segundos')),
-                DropdownMenuItem(value: 60, child: Text('Cada 60 segundos')),
+              items: [
+                for (final secs in const [10, 20, 30, 60])
+                  DropdownMenuItem(
+                      value: secs,
+                      child: Text(l.t('Cada $secs segundos',
+                          'Every $secs seconds'))),
               ],
               onChanged: (v) => setState(() => _pollSeconds = v ?? 20),
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<int>(
               value: _backgroundMinutes,
-              decoration: const InputDecoration(
-                labelText: 'Chequeo con la app cerrada',
-                helperText: 'Android no permite menos de 15 minutos',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                labelText:
+                    l.t('Chequeo con la app cerrada', 'Check while app closed'),
+                helperText: l.t('Android no permite menos de 15 minutos',
+                    'Android does not allow less than 15 minutes'),
+                border: const OutlineInputBorder(),
               ),
-              items: const [
-                DropdownMenuItem(value: 15, child: Text('Cada 15 minutos')),
-                DropdownMenuItem(value: 30, child: Text('Cada 30 minutos')),
-                DropdownMenuItem(value: 60, child: Text('Cada hora')),
+              items: [
+                DropdownMenuItem(
+                    value: 15,
+                    child: Text(l.t('Cada 15 minutos', 'Every 15 minutes'))),
+                DropdownMenuItem(
+                    value: 30,
+                    child: Text(l.t('Cada 30 minutos', 'Every 30 minutes'))),
+                DropdownMenuItem(
+                    value: 60, child: Text(l.t('Cada hora', 'Every hour'))),
               ],
               onChanged: (v) => setState(() => _backgroundMinutes = v ?? 15),
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<int>(
               value: _staleMinutes,
-              decoration: const InputDecoration(
-                labelText: 'Umbral de comunicacion stale',
-                helperText:
+              decoration: InputDecoration(
+                labelText: l.t('Umbral de comunicacion stale',
+                    'Stale comms threshold'),
+                helperText: l.t(
                     'Online pero sin comunicacion exitosa hace mas de N min',
-                border: OutlineInputBorder(),
+                    'Online but without successful comms for more than N min'),
+                border: const OutlineInputBorder(),
               ),
-              items: const [
-                DropdownMenuItem(value: 15, child: Text('15 minutos')),
-                DropdownMenuItem(value: 30, child: Text('30 minutos')),
-                DropdownMenuItem(value: 60, child: Text('60 minutos')),
-                DropdownMenuItem(value: 120, child: Text('2 horas')),
+              items: [
+                for (final mins in const [15, 30, 60, 120])
+                  DropdownMenuItem(
+                      value: mins,
+                      child: Text(l.t('$mins minutos', '$mins minutes'))),
               ],
               onChanged: (v) => setState(() => _staleMinutes = v ?? 30),
             ),
             const Divider(height: 32),
-            Text('Entregas (deliveries)',
+            // ---- Consolas silenciadas -------------------------------------------
+            Text(l.t('Consolas AdaptMAC', 'AdaptMAC consoles'),
+                style: Theme.of(context).textTheme.titleMedium),
+            _MuteChipList(
+              title: l.t('Silenciar consolas especificas',
+                  'Mute specific consoles'),
+              subtitle: l.t(
+                  'Los MACs marcados (p. ej. los service trucks) NO notifican '
+                      'caidas ni bypass; siguen visibles en la pestaña '
+                      'Consolas. Tambien puedes usar la campana de cada tile.',
+                  'Marked MACs (e.g. service trucks) do NOT notify offline or '
+                      'bypass events; they stay visible in the Consoles tab. '
+                      'You can also use the bell on each tile.'),
+              emptyText: l.t(
+                  'Aun no hay consolas detectadas: apareceran tras la primera '
+                      'sincronizacion.',
+                  'No consoles detected yet: they will appear after the first '
+                      'sync.'),
+              items: _knownConsoles,
+              muted: _mutedConsoles,
+              onChanged: (code, mute) => setState(() =>
+                  mute ? _mutedConsoles.add(code) : _mutedConsoles.remove(code)),
+            ),
+            const Divider(height: 32),
+            // ---- Entregas -------------------------------------------------------
+            Text(l.t('Entregas (deliveries)', 'Deliveries'),
                 style: Theme.of(context).textTheme.titleMedium),
             SwitchListTile(
-              title: const Text('Monitorear entregas'),
-              subtitle: const Text(
-                  'Alerta entregas sin confirmar y varianza medidor vs guia'),
+              title: Text(l.t('Monitorear entregas', 'Monitor deliveries')),
+              subtitle: Text(l.t(
+                  'Alerta entregas sin confirmar y varianza medidor vs guia',
+                  'Alerts unconfirmed deliveries and metered-vs-docket variance')),
               value: _monitorDeliveries,
               onChanged: (v) => setState(() => _monitorDeliveries = v),
             ),
@@ -283,85 +394,118 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(height: 8),
               DropdownButtonFormField<double>(
                 value: _varianceThresholdPct,
-                decoration: const InputDecoration(
-                  labelText: 'Umbral de varianza',
-                  helperText:
+                decoration: InputDecoration(
+                  labelText: l.t('Umbral de varianza', 'Variance threshold'),
+                  helperText: l.t(
                       '|medido − guia| / guia. A partir de 5% la alerta es critica.',
-                  border: OutlineInputBorder(),
+                      '|metered − docket| / docket. From 5% the alert is critical.'),
+                  border: const OutlineInputBorder(),
                 ),
-                items: const [
-                  DropdownMenuItem(value: 0.5, child: Text('0.5 %')),
-                  DropdownMenuItem(value: 1.0, child: Text('1 % (recomendado)')),
-                  DropdownMenuItem(value: 2.0, child: Text('2 %')),
-                  DropdownMenuItem(value: 5.0, child: Text('5 %')),
+                items: [
+                  const DropdownMenuItem(value: 0.5, child: Text('0.5 %')),
+                  DropdownMenuItem(
+                      value: 1.0,
+                      child: Text(l.t('1 % (recomendado)', '1 % (recommended)'))),
+                  const DropdownMenuItem(value: 2.0, child: Text('2 %')),
+                  const DropdownMenuItem(value: 5.0, child: Text('5 %')),
                 ],
                 onChanged: (v) =>
                     setState(() => _varianceThresholdPct = v ?? 1.0),
               ),
               const SizedBox(height: 4),
-              _ProductMuteList(
-                title: 'Silenciar entregas por producto',
-                subtitle: 'Los productos marcados NO notifican anomalias de '
-                    'entrega (siguen visibles en la pestaña Entregas).',
-                products: _knownProducts,
+              _MuteChipList(
+                title: l.t('Silenciar entregas por producto',
+                    'Mute deliveries by product'),
+                subtitle: l.t(
+                    'Los productos marcados NO notifican anomalias de entrega '
+                        '(siguen visibles en la pestaña Entregas).',
+                    'Marked products do NOT notify delivery anomalies '
+                        '(they stay visible in the Deliveries tab).'),
+                emptyText: l.t(
+                    'Aun no hay productos detectados: apareceran cuando el '
+                        'monitor sincronice datos.',
+                    'No products detected yet: they will appear once the '
+                        'monitor syncs data.'),
+                items: _knownProducts,
                 muted: _mutedDeliveries,
-                onChanged: (p, mute) => setState(() =>
-                    mute ? _mutedDeliveries.add(p) : _mutedDeliveries.remove(p)),
+                onChanged: (p, mute) => setState(() => mute
+                    ? _mutedDeliveries.add(p)
+                    : _mutedDeliveries.remove(p)),
               ),
             ],
             const Divider(height: 32),
-            Text('Sobrellenados SFL',
+            // ---- SFL ------------------------------------------------------------
+            Text(l.t('Sobrellenados SFL', 'SFL overfills'),
                 style: Theme.of(context).textTheme.titleMedium),
             SwitchListTile(
-              title: const Text('Monitorear sobrellenados'),
-              subtitle: const Text(
+              title: Text(
+                  l.t('Monitorear sobrellenados', 'Monitor overfills')),
+              subtitle: Text(l.t(
                   'Despachos que exceden el Safe Fill Level del equipo '
-                  '(la alarma "Equipment Overfill" de AdaptIQ)'),
+                      '(la alarma "Equipment Overfill" de AdaptIQ)',
+                  'Dispenses exceeding the equipment Safe Fill Level '
+                      '(the AdaptIQ "Equipment Overfill" alarm)')),
               value: _monitorOverfill,
               onChanged: (v) => setState(() => _monitorOverfill = v),
             ),
             if (_monitorOverfill)
-              _ProductMuteList(
-                title: 'Silenciar SFL por producto',
-                subtitle: 'Si solo interesa el diesel, silencia aqui el resto '
-                    'de productos (coolant, aceites, …).',
-                products: _knownProducts,
+              _MuteChipList(
+                title: l.t('Silenciar SFL por producto', 'Mute SFL by product'),
+                subtitle: l.t(
+                    'Si solo interesa el diesel, silencia aqui el resto de '
+                        'productos (coolant, aceites, …).',
+                    'If only diesel matters, mute the other products here '
+                        '(coolant, oils, …).'),
+                emptyText: l.t(
+                    'Aun no hay productos detectados: apareceran cuando el '
+                        'monitor sincronice datos.',
+                    'No products detected yet: they will appear once the '
+                        'monitor syncs data.'),
+                items: _knownProducts,
                 muted: _mutedSfl,
                 onChanged: (p, mute) => setState(
                     () => mute ? _mutedSfl.add(p) : _mutedSfl.remove(p)),
               ),
             const Divider(height: 32),
-            Text('Notificaciones',
+            // ---- Notificaciones -------------------------------------------------
+            Text(l.t('Notificaciones', 'Notifications'),
                 style: Theme.of(context).textTheme.titleMedium),
             SwitchListTile(
-              title: const Text('Notificaciones activas'),
-              subtitle: const Text(
-                  'Tambien controla el chequeo en segundo plano'),
+              title: Text(
+                  l.t('Notificaciones activas', 'Notifications enabled')),
+              subtitle: Text(l.t(
+                  'Tambien controla el chequeo en segundo plano',
+                  'Also controls the background check')),
               value: _notificationsEnabled,
               onChanged: (v) => setState(() => _notificationsEnabled = v),
             ),
             SwitchListTile(
-              title: const Text('Avisar recuperaciones'),
-              subtitle:
-                  const Text('Consola reconectada / bypass desactivado'),
+              title: Text(l.t('Avisar recuperaciones', 'Notify recoveries')),
+              subtitle: Text(l.t(
+                  'Consola reconectada / bypass desactivado',
+                  'Console back online / bypass cleared')),
               value: _notifyRecovery,
               onChanged: (v) => setState(() => _notifyRecovery = v),
             ),
             OutlinedButton.icon(
-              onPressed: () => NotificationService.instance.showTest(),
+              onPressed: () => NotificationService.instance.showTest(l),
               icon: const Icon(Icons.notifications_active_outlined),
-              label: const Text('Notificacion de prueba'),
+              label: Text(l.t('Notificacion de prueba', 'Test notification')),
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: _save,
               icon: const Icon(Icons.save),
-              label: const Text('Guardar'),
+              label: Text(l.t('Guardar', 'Save')),
             ),
             const SizedBox(height: 8),
             Text(
-              'El token se guarda en el almacenamiento local del dispositivo. '
-              'Usa un token de SOLO LECTURA emitido para este monitor.',
+              l.t(
+                  'El token se guarda en el almacenamiento local del '
+                      'dispositivo. Usa un token de SOLO LECTURA emitido para '
+                      'este monitor.',
+                  'The token is stored on the device. Use a READ-ONLY token '
+                      'issued for this monitor.'),
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 24),
@@ -372,22 +516,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 }
 
-/// Lista de chips de producto donde "seleccionado" = SILENCIADO. Los
-/// productos se acumulan automaticamente a medida que el monitor ve datos.
-class _ProductMuteList extends StatelessWidget {
-  const _ProductMuteList({
+/// Lista de chips donde "seleccionado" = SILENCIADO (productos o consolas).
+class _MuteChipList extends StatelessWidget {
+  const _MuteChipList({
     required this.title,
     required this.subtitle,
-    required this.products,
+    required this.emptyText,
+    required this.items,
     required this.muted,
     required this.onChanged,
   });
 
   final String title;
   final String subtitle;
-  final List<String> products;
+  final String emptyText;
+  final List<String> items;
   final Set<String> muted;
-  final void Function(String product, bool mute) onChanged;
+  final void Function(String item, bool mute) onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -400,10 +545,9 @@ class _ProductMuteList extends StatelessWidget {
           const SizedBox(height: 2),
           Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 8),
-          if (products.isEmpty)
+          if (items.isEmpty)
             Text(
-              'Aun no hay productos detectados: apareceran aqui cuando el '
-              'monitor sincronice datos.',
+              emptyText,
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
@@ -414,14 +558,14 @@ class _ProductMuteList extends StatelessWidget {
               spacing: 8,
               runSpacing: 4,
               children: [
-                for (final p in products)
+                for (final item in items)
                   FilterChip(
-                    label: Text(p, style: const TextStyle(fontSize: 12)),
-                    avatar: muted.contains(p)
+                    label: Text(item, style: const TextStyle(fontSize: 12)),
+                    avatar: muted.contains(item)
                         ? const Icon(Icons.notifications_off, size: 16)
                         : null,
-                    selected: muted.contains(p),
-                    onSelected: (v) => onChanged(p, v),
+                    selected: muted.contains(item),
+                    onSelected: (v) => onChanged(item, v),
                   ),
               ],
             ),

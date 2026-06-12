@@ -68,12 +68,18 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
 
     final previous = s.loadConditions();
     final current = evaluateAll(consoles, staleAfter: settings.staleAfter, now: now);
-    final events = diffEvents(
-      previous: previous,
-      consoles: consoles,
-      current: current,
-      now: now,
-    );
+    // El silenciado por consola se aplica a los EVENTOS (lo que se notifica);
+    // el estado de dedup se guarda completo, asi que des-silenciar un MAC no
+    // re-dispara sus alertas viejas.
+    final events = [
+      for (final e in diffEvents(
+        previous: previous,
+        consoles: consoles,
+        current: current,
+        now: now,
+      ))
+        if (!settings.isConsoleMuted(e.console.code)) e,
+    ];
     await s.saveConditions(current);
 
     // ---- 2. Entregas (deliveries) ---------------------------------------------
