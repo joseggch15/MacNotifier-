@@ -135,6 +135,76 @@ void main() {
     });
   });
 
+  group('trackOfflineAlarms (caida prolongada)', () {
+    const alarmAfter = Duration(minutes: 30);
+
+    test('primera observacion offline: registra el inicio, no alarma aun', () {
+      final r = trackOfflineAlarms(
+        consoles: [mac('MER.9', online: false)],
+        previousSince: const {},
+        previousAlarmed: const {},
+        alarmAfter: alarmAfter,
+        now: now,
+      );
+      expect(r.offlineSince['MER.9'], now);
+      expect(r.newAlarms, isEmpty);
+      expect(r.alarmed, isEmpty);
+    });
+
+    test('offline >= umbral: dispara la alarma una vez', () {
+      final start = now.subtract(const Duration(minutes: 31));
+      final r = trackOfflineAlarms(
+        consoles: [mac('MER.9', online: false)],
+        previousSince: {'MER.9': start},
+        previousAlarmed: const {},
+        alarmAfter: alarmAfter,
+        now: now,
+      );
+      expect(r.offlineSince['MER.9'], start); // conserva el inicio
+      expect(r.newAlarms.single.code, 'MER.9');
+      expect(r.alarmed, contains('MER.9'));
+    });
+
+    test('ya alarmada: no vuelve a disparar mientras siga caida', () {
+      final start = now.subtract(const Duration(minutes: 45));
+      final r = trackOfflineAlarms(
+        consoles: [mac('MER.9', online: false)],
+        previousSince: {'MER.9': start},
+        previousAlarmed: {'MER.9'},
+        alarmAfter: alarmAfter,
+        now: now,
+      );
+      expect(r.newAlarms, isEmpty);
+      expect(r.alarmed, contains('MER.9'));
+    });
+
+    test('reconexion: se borra de since y alarmed (re-arma)', () {
+      final start = now.subtract(const Duration(minutes: 45));
+      final r = trackOfflineAlarms(
+        consoles: [mac('MER.9', online: true)],
+        previousSince: {'MER.9': start},
+        previousAlarmed: {'MER.9'},
+        alarmAfter: alarmAfter,
+        now: now,
+      );
+      expect(r.offlineSince, isEmpty);
+      expect(r.alarmed, isEmpty);
+      expect(r.newAlarms, isEmpty);
+    });
+
+    test('online desconocido (null) no se vigila', () {
+      final r = trackOfflineAlarms(
+        consoles: [mac('MER.7')],
+        previousSince: const {},
+        previousAlarmed: const {},
+        alarmAfter: alarmAfter,
+        now: now,
+      );
+      expect(r.offlineSince, isEmpty);
+      expect(r.newAlarms, isEmpty);
+    });
+  });
+
   group('AdaptMac', () {
     test('fromNode aplana el site y parsea fechas ISO (como MSGQ)', () {
       final c = AdaptMac.fromNode({

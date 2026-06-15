@@ -31,14 +31,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final TextEditingController _siteMatch;
   late final TextEditingController _siteId;
 
+  late TextEditingController _unauthLanes;
+
   late int _pollSeconds;
   late int _backgroundMinutes;
   late int _staleMinutes;
+  late int _offlineAlarmMinutes;
   late bool _notificationsEnabled;
   late bool _notifyRecovery;
   late bool _monitorDeliveries;
   late double _varianceThresholdPct;
   late bool _monitorOverfill;
+  late bool _monitorUnauthorised;
   late Set<String> _mutedSfl;
   late Set<String> _mutedDeliveries;
   late Set<String> _mutedConsoles;
@@ -58,14 +62,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _token = TextEditingController(text: s.token);
     _siteMatch = TextEditingController(text: s.siteMatch);
     _siteId = TextEditingController(text: s.siteId);
+    _unauthLanes = TextEditingController(text: s.unauthorisedLanes.join('\n'));
     _pollSeconds = s.pollSeconds;
     _backgroundMinutes = s.backgroundMinutes;
     _staleMinutes = s.staleMinutes;
+    _offlineAlarmMinutes = s.offlineAlarmMinutes;
     _notificationsEnabled = s.notificationsEnabled;
     _notifyRecovery = s.notifyRecovery;
     _monitorDeliveries = s.monitorDeliveries;
     _varianceThresholdPct = s.varianceThresholdPct;
     _monitorOverfill = s.monitorOverfill;
+    _monitorUnauthorised = s.monitorUnauthorised;
     _mutedSfl = s.mutedSflProducts.toSet();
     _mutedDeliveries = s.mutedDeliveryProducts.toSet();
     _mutedConsoles = s.mutedConsoles.toSet();
@@ -96,10 +103,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _token.dispose();
     _siteMatch.dispose();
     _siteId.dispose();
+    _unauthLanes.dispose();
     super.dispose();
   }
 
   L10n get _l => L10n(_languageCode);
+
+  /// Lanes vigilados desde el editor multilinea: una por linea (o separadas por
+  /// coma), sin vacios ni duplicados, preservando el orden de entrada.
+  List<String> _parseLanes() {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final raw in _unauthLanes.text.split(RegExp(r'[\n,]'))) {
+      final lane = raw.trim();
+      if (lane.isEmpty) continue;
+      if (seen.add(lane.toUpperCase())) out.add(lane);
+    }
+    return out;
+  }
 
   AppSettings _fromForm() => ref.read(settingsProvider).copyWith(
         endpoint: _endpoint.text.trim(),
@@ -109,11 +130,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         pollSeconds: _pollSeconds,
         backgroundMinutes: _backgroundMinutes,
         staleMinutes: _staleMinutes,
+        offlineAlarmMinutes: _offlineAlarmMinutes,
         notificationsEnabled: _notificationsEnabled,
         notifyRecovery: _notifyRecovery,
         monitorDeliveries: _monitorDeliveries,
         varianceThresholdPct: _varianceThresholdPct,
         monitorOverfill: _monitorOverfill,
+        monitorUnauthorised: _monitorUnauthorised,
+        unauthorisedLanes: _parseLanes(),
         mutedSflProducts: _mutedSfl.toList()..sort(),
         mutedDeliveryProducts: _mutedDeliveries.toList()..sort(),
         mutedConsoles: _mutedConsoles.toList()..sort(),
@@ -354,6 +378,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ],
               onChanged: (v) => setState(() => _staleMinutes = v ?? 30),
             ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              value: _offlineAlarmMinutes,
+              decoration: InputDecoration(
+                labelText: l.t('Alarma de caida prolongada',
+                    'Prolonged-outage alarm'),
+                helperText: l.t(
+                    'Una consola OFFLINE no silenciada que lleve este tiempo '
+                        'caida dispara una alarma estilo despertador',
+                    'An un-muted OFFLINE console down for this long triggers an '
+                        'alarm-clock alert'),
+                border: const OutlineInputBorder(),
+              ),
+              items: [
+                for (final mins in const [15, 30, 45, 60])
+                  DropdownMenuItem(
+                      value: mins,
+                      child: Text(l.t('A los $mins minutos', 'After $mins minutes'))),
+              ],
+              onChanged: (v) => setState(() => _offlineAlarmMinutes = v ?? 30),
+            ),
             const Divider(height: 32),
             // ---- Consolas silenciadas -------------------------------------------
             Text(l.t('Consolas AdaptMAC', 'AdaptMAC consoles'),
@@ -465,6 +510,42 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 muted: _mutedSfl,
                 onChanged: (p, mute) => setState(
                     () => mute ? _mutedSfl.add(p) : _mutedSfl.remove(p)),
+              ),
+            const Divider(height: 32),
+            // ---- Despachos sin ID (no autorizados) ------------------------------
+            Text(l.t('Despachos sin ID (no autorizados)',
+                'Dispenses without ID (unauthorised)'),
+                style: Theme.of(context).textTheme.titleMedium),
+            SwitchListTile(
+              title: Text(l.t('Monitorear despachos sin ID',
+                  'Monitor dispenses without ID')),
+              subtitle: Text(l.t(
+                  'Despachos Unauthorised SIN equipo asignado en los lanes '
+                      'vigilados; salen de la lista cuando AdaptIQ les asigna ID',
+                  'Unauthorised dispenses with NO equipment assigned in the '
+                      'watched lanes; they leave the list once AdaptIQ assigns an ID')),
+              value: _monitorUnauthorised,
+              onChanged: (v) => setState(() => _monitorUnauthorised = v),
+            ),
+            if (_monitorUnauthorised)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: TextFormField(
+                  controller: _unauthLanes,
+                  maxLines: null,
+                  minLines: 3,
+                  decoration: InputDecoration(
+                    labelText: l.t('Lanes vigilados (uno por linea)',
+                        'Watched lanes (one per line)'),
+                    helperText: l.t(
+                        'El punto de despacho exacto como aparece en AdaptIQ '
+                            '(Dispensing Point).',
+                        'The exact dispensing point as shown in AdaptIQ '
+                            '(Dispensing Point).'),
+                    border: const OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                  ),
+                ),
               ),
             const Divider(height: 32),
             // ---- Notificaciones -------------------------------------------------

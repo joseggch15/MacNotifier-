@@ -83,7 +83,7 @@ query Dispenses(\$siteId: ID!, \$filter: MovementQuery, \$first: Int, \$after: S
         target { equipmentId description }
         source { code name }
         fieldUser { name }
-        adaptMac { code }
+        adaptMac { code description }
       } }
     }
   }

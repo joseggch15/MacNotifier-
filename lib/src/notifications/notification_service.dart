@@ -13,6 +13,7 @@
 library;
 
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -22,8 +23,10 @@ import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
+import '../core/unauthorised_check.dart';
 import '../core/util.dart';
 import '../i18n/l10n.dart';
+import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
 
 class NotificationService {
@@ -38,6 +41,7 @@ class NotificationService {
   static const int _summaryNotificationId = 0x00ADAC; // fijo: el resumen se actualiza a si mismo
   static const int _deliverySummaryNotificationId = 0x00DE11;
   static const int _overfillSummaryNotificationId = 0x005F1;
+  static const int _unauthorisedSummaryNotificationId = 0x00A17;
 
   static bool get _supported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
@@ -127,6 +131,102 @@ class NotificationService {
       }
     }
   }
+
+  /// Alarma "estilo despertador" para consolas OFFLINE no silenciadas que
+  /// llevan caidas mas de `offlineAlarmMinutes`: canal de maxima importancia,
+  /// sonido de alarma insistente, vibracion fuerte y, en Android, intent de
+  /// pantalla completa. Cada consola tiene un id estable distinto del de su
+  /// notificacion offline informativa, asi una NO reemplaza a la otra.
+  Future<void> showOfflineAlarms(
+    List<AdaptMac> consoles,
+    AppSettings settings, {
+    required Map<String, DateTime> offlineSince,
+    required DateTime now,
+  }) async {
+    if (!_supported || consoles.isEmpty) return;
+    await init();
+    final l = L10n(settings.languageCode);
+    for (final c in consoles) {
+      final since = offlineSince[c.code];
+      final mins =
+          since == null ? settings.offlineAlarmMinutes : now.difference(since).inMinutes;
+      await _showAlarm(
+        id: stableId('offline-alarm/${c.code}'),
+        title: l.t('⏰ ${c.code} lleva $mins min sin conexion',
+            '⏰ ${c.code} offline for $mins min'),
+        body: [
+          if ((c.description ?? '').isNotEmpty) c.description!,
+          l.t(
+              'La consola sigue caida. Revisa la conexion del AdaptMAC.',
+              'The console is still down. Check the AdaptMAC connection.'),
+        ].join(' · '),
+      );
+    }
+  }
+
+  /// Publica las transiciones de despachos UNAUTHORISED sin ID. Una APERTURA
+  /// (despacho no autorizado sin equipo) es una alerta; un CIERRE (AdaptIQ le
+  /// asigno equipo) es una recuperacion que reemplaza a la alerta en la bandeja
+  /// (o la retira si `notifyRecovery` esta apagado).
+  Future<void> showUnauthorisedEvents(
+      List<UnauthorisedEvent> events, AppSettings settings) async {
+    if (!_supported || events.isEmpty) return;
+    await init();
+    final l = L10n(settings.languageCode);
+
+    final raised = [for (final e in events) if (e.active) e];
+    final cleared = [for (final e in events) if (!e.active) e];
+
+    for (final event in cleared) {
+      final id = stableId('unauth/${event.txn.id}');
+      if (settings.notifyRecovery) {
+        await _show(
+          id: id,
+          title: l.t('🟢 No autorizado con ID asignado',
+              '🟢 Unauthorised dispense assigned an ID'),
+          body: _unauthContext(event.txn, l),
+          channel: _Channel.status,
+        );
+      } else {
+        await _plugin.cancel(id);
+      }
+    }
+
+    if (raised.length > maxIndividual) {
+      final lines = [
+        for (final e in raised)
+          '${e.txn.shortRef} — ${_litres.format(e.txn.volume ?? 0)} L',
+      ];
+      await _show(
+        id: _unauthorisedSummaryNotificationId,
+        title: l.t('⚠️ ${raised.length} despachos sin ID (no autorizados)',
+            '⚠️ ${raised.length} dispenses without ID (unauthorised)'),
+        body: lines.join(' · '),
+        channel: _Channel.critical,
+        inboxLines: lines,
+      );
+    } else {
+      for (final event in raised) {
+        await _show(
+          id: stableId('unauth/${event.txn.id}'),
+          title: l.t('⚠️ Despacho no autorizado sin ID',
+              '⚠️ Unauthorised dispense without ID'),
+          body: _unauthContext(event.txn, l),
+          channel: _Channel.critical,
+        );
+      }
+    }
+  }
+
+  String _unauthContext(UnauthorisedTxn t, L10n l) => [
+        if ((t.lane ?? '').isNotEmpty) t.lane!,
+        if (t.volume != null) '${_litres.format(t.volume)} L',
+        if ((t.product ?? '').isNotEmpty) t.product!,
+        if ((t.fieldUser ?? '').isNotEmpty)
+          '${l.t('Operador', 'Operator')}: ${t.fieldUser}',
+        if (t.collectedAt != null)
+          DateFormat('dd/MM HH:mm').format(t.collectedAt!.toLocal()),
+      ].join(' · ');
 
   /// Publica las notificaciones de un ciclo de auditoria de ENTREGAS.
   ///
@@ -385,9 +485,51 @@ class NotificationService {
       NotificationDetails(android: android, iOS: darwin),
     );
   }
+
+  /// Variante "despertador": sonido de alarma insistente (se repite hasta
+  /// descartar), vibracion fuerte, categoria alarm e intent de pantalla
+  /// completa (Android). En iOS, nivel de interrupcion time-sensitive para
+  /// romper el modo Concentracion sin requerir el permiso de alertas criticas.
+  Future<void> _showAlarm({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    final android = AndroidNotificationDetails(
+      _Channel.alarm.id,
+      _Channel.alarm.name,
+      channelDescription: _Channel.alarm.description,
+      importance: Importance.max,
+      priority: Priority.high,
+      category: AndroidNotificationCategory.alarm,
+      fullScreenIntent: true,
+      audioAttributesUsage: AudioAttributesUsage.alarm,
+      // FLAG_INSISTENT (0x4): el sonido se repite hasta que el usuario la
+      // descarta — el comportamiento "despertador" que pidio el operador.
+      additionalFlags: Int32List.fromList(<int>[4]),
+      enableVibration: true,
+      vibrationPattern: Int64List.fromList(<int>[0, 600, 300, 600, 300, 600]),
+    );
+    const darwin = DarwinNotificationDetails(
+      interruptionLevel: InterruptionLevel.timeSensitive,
+    );
+    await _plugin.show(
+      id,
+      title,
+      body,
+      NotificationDetails(android: android, iOS: darwin),
+    );
+  }
 }
 
 enum _Channel {
+  alarm(
+    'adaptmac_alarm',
+    'Alarmas de caida prolongada',
+    'Consola sin conexion 30+ min (alarma estilo despertador)',
+    Importance.max,
+    Priority.high,
+  ),
   critical(
     'adaptmac_critical',
     'Alertas criticas',

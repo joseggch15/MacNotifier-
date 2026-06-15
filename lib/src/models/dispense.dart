@@ -18,6 +18,7 @@ class Dispense {
     this.tank,
     this.fieldUser,
     this.adaptMac,
+    this.adaptMacDescription,
     this.collectedAt,
     this.updatedAt,
   });
@@ -32,10 +33,20 @@ class Dispense {
   final String? equipmentId;
   final String? equipmentDescription;
 
-  /// Punto de despacho (`source` aplanado: el tanque/isla que entrego).
+  /// Tanque ORIGEN (`source` aplanado). OJO: en Merian es el tanque virtual
+  /// ("LFO - Virtual Tank"), igual para los 3 lanes — NO sirve para distinguir
+  /// el punto de despacho. El "Dispensing Point" (lane) es la consola AdaptMAC
+  /// (ver [adaptMacDescription]).
   final String? tank;
   final String? fieldUser;
+
+  /// Codigo de la consola AdaptMAC que registro el despacho (p. ej. "MER.3").
   final String? adaptMac;
+
+  /// Descripcion de la consola AdaptMAC = el "Dispensing Point" / lane
+  /// (p. ej. "LFO Dispense Lane 3"). La API NO expone el medidor/lane como
+  /// campo propio del Dispense; el unico vinculo al lane es esta consola.
+  final String? adaptMacDescription;
   final DateTime? collectedAt;
   final DateTime? updatedAt;
 
@@ -43,6 +54,7 @@ class Dispense {
     final target = node['target'];
     final source = node['source'];
     final user = node['fieldUser'];
+    final mac = node['adaptMac'];
     return Dispense(
       id: (node['id'] ?? '').toString(),
       status: node['status']?.toString(),
@@ -55,9 +67,8 @@ class Dispense {
           target is Map ? target['description']?.toString() : null,
       tank: _label(source),
       fieldUser: user is Map ? user['name']?.toString() : null,
-      adaptMac: node['adaptMac'] is Map
-          ? (node['adaptMac'] as Map)['code']?.toString()
-          : null,
+      adaptMac: mac is Map ? mac['code']?.toString() : null,
+      adaptMacDescription: mac is Map ? mac['description']?.toString() : null,
       collectedAt: _parseDate(node['recordCollectedAt']),
       updatedAt: _parseDate(node['recordUpdatedAt']),
     );

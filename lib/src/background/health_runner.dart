@@ -32,6 +32,7 @@ import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
+import '../core/unauthorised_check.dart';
 import '../models/delivery.dart';
 import '../notifications/notification_service.dart';
 import '../storage/app_store.dart';
@@ -82,6 +83,24 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
     ];
     await s.saveConditions(current);
 
+    // ---- 1b. Alarma de caida prolongada (offline sostenido) -----------------
+    // Escala una consola OFFLINE que lleva >= offlineAlarmMinutes caida a una
+    // alarma "estilo despertador". El silenciado por consola se aplica AQUI
+    // (al notificar); el estado de offlineSince/alarmed se persiste completo.
+    final offline = trackOfflineAlarms(
+      consoles: consoles,
+      previousSince: s.loadOfflineSince(),
+      previousAlarmed: s.loadOfflineAlarmed(),
+      alarmAfter: settings.offlineAlarmAfter,
+      now: now,
+    );
+    await s.saveOfflineSince(offline.offlineSince);
+    await s.saveOfflineAlarmed(offline.alarmed);
+    final offlineAlarmEvents = [
+      for (final mac in offline.newAlarms)
+        if (!settings.isConsoleMuted(mac.code)) mac,
+    ];
+
     // ---- 2. Entregas (deliveries) ---------------------------------------------
     var deliveries = <Delivery>[];
     var deliveryEvents = <DeliveryEvent>[];
@@ -96,17 +115,17 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
       ];
     }
 
-    // ---- 3. Sobrellenados SFL ----------------------------------------------------
-    var overfills = <OverfillAlert>[];
-    var overfillEvents = <OverfillAlert>[];
-    if (settings.monitorOverfill) {
-      final synced = await _syncOverfills(client, s, settings, now);
-      overfills = synced.overfills;
-      overfillEvents = [
-        for (final o in synced.newAlerts)
-          if (!settings.isSflProductMuted(o.product)) o,
-      ];
-    }
+    // ---- 3. Auditorias sobre DESPACHOS (un solo fetch incremental) ------------
+    //   3a. Sobrellenados SFL (despacho > limite del equipo).
+    //   3b. UNAUTHORISED sin ID asignado en los lanes vigilados.
+    final dispenseAudits = await _syncDispenseAudits(client, s, settings, now);
+    final overfills = dispenseAudits.overfills;
+    final overfillEvents = [
+      for (final o in dispenseAudits.newOverfills)
+        if (!settings.isSflProductMuted(o.product)) o,
+    ];
+    final unauthorised = dispenseAudits.unauthorised;
+    final unauthorisedEvents = dispenseAudits.unauthorisedEvents;
 
     // Acumula los productos vistos para la UI de silenciado.
     await s.addKnownProducts([
@@ -122,6 +141,10 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
       deliveryEvents: deliveryEvents,
       overfills: overfills,
       overfillEvents: overfillEvents,
+      unauthorised: unauthorised,
+      unauthorisedEvents: unauthorisedEvents,
+      offlineSince: offline.offlineSince,
+      offlineAlarmEvents: offlineAlarmEvents,
     );
     await s.saveSnapshot(result);
     await s.saveLastError(null);
@@ -130,6 +153,14 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
       if (events.isNotEmpty) {
         await NotificationService.instance.showEvents(events, settings);
       }
+      if (offlineAlarmEvents.isNotEmpty) {
+        await NotificationService.instance.showOfflineAlarms(
+          offlineAlarmEvents,
+          settings,
+          offlineSince: offline.offlineSince,
+          now: now,
+        );
+      }
       if (deliveryEvents.isNotEmpty) {
         await NotificationService.instance
             .showDeliveryEvents(deliveryEvents, settings);
@@ -137,6 +168,10 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
       if (overfillEvents.isNotEmpty) {
         await NotificationService.instance
             .showOverfillEvents(overfillEvents, settings);
+      }
+      if (unauthorisedEvents.isNotEmpty) {
+        await NotificationService.instance
+            .showUnauthorisedEvents(unauthorisedEvents, settings);
       }
     }
     return result;
@@ -199,78 +234,115 @@ Future<({List<Delivery> deliveries, List<DeliveryEvent> events})>
   return (deliveries: merged, events: diff.events);
 }
 
-/// Sincroniza despachos desde el watermark, los cruza contra el mapa de
-/// limites SFL (refrescado a lo sumo cada kSflLimitsMaxAge) y devuelve la
-/// ventana local + los sobrellenados NUEVOS (no procesados antes).
-Future<({List<OverfillAlert> overfills, List<OverfillAlert> newAlerts})>
-    _syncOverfills(
+/// Sincroniza los despachos UNA SOLA VEZ desde el watermark compartido y corre
+/// sobre ellos las dos auditorias que dependen de despachos:
+///
+///   * Sobrellenados SFL — cruce contra el mapa de limites del maestro de
+///     equipos (refrescado a lo sumo cada kSflLimitsMaxAge).
+///   * UNAUTHORISED sin ID — despachos no autorizados sin equipo en los lanes
+///     vigilados, con dedup por transicion (igual que entregas).
+///
+/// Si ninguna de las dos esta activa (o el overfill no tiene limites y el de
+/// no autorizados esta apagado) no se gasta la peticion de despachos.
+Future<
+    ({
+      List<OverfillAlert> overfills,
+      List<OverfillAlert> newOverfills,
+      List<UnauthorisedTxn> unauthorised,
+      List<UnauthorisedEvent> unauthorisedEvents,
+    })> _syncDispenseAudits(
   AdaptIQClient client,
   AppStore s,
   AppSettings settings,
   DateTime now,
 ) async {
-  // 1. Mapa de limites SFL (la consulta pesada: maestro de equipos completo).
-  var limits = s.loadSflLimits();
-  final fetchedAt = s.sflLimitsFetchedAt;
-  if (fetchedAt == null || now.difference(fetchedAt) > kSflLimitsMaxAge) {
-    try {
-      final fresh = await client.fetchSflLimits();
-      await s.saveSflLimits(fresh,
-          equipmentField: client.equipmentField ?? '', now: now);
-      if (fresh != null) {
-        limits = fresh;
-        await s.addKnownProducts(
-            [for (final key in fresh.keys) key.split('|').last]);
+  // 1. Mapa de limites SFL (solo si se auditan sobrellenados).
+  Map<String, double>? limits;
+  if (settings.monitorOverfill) {
+    limits = s.loadSflLimits();
+    final fetchedAt = s.sflLimitsFetchedAt;
+    if (fetchedAt == null || now.difference(fetchedAt) > kSflLimitsMaxAge) {
+      try {
+        final fresh = await client.fetchSflLimits();
+        await s.saveSflLimits(fresh,
+            equipmentField: client.equipmentField ?? '', now: now);
+        if (fresh != null) {
+          limits = fresh;
+          await s.addKnownProducts(
+              [for (final key in fresh.keys) key.split('|').last]);
+        }
+      } on ApiException {
+        // Refresco fallido: se sigue auditando con el mapa cacheado (si existe).
       }
-    } on ApiException {
-      // Refresco fallido: se sigue auditando con el mapa cacheado (si existe).
     }
   }
-  if (limits == null || limits.isEmpty) {
-    // Tenant sin conexion de equipos (o maestro sin SFL): nada que auditar.
+  final overfillEnabled =
+      settings.monitorOverfill && limits != null && limits.isNotEmpty;
+  final unauthEnabled = settings.monitorUnauthorised;
+
+  if (!overfillEnabled && !unauthEnabled) {
+    // Nada que auditar sobre despachos: no se consulta la API.
     return (
       overfills: s.loadOverfillSnapshot(),
-      newAlerts: const <OverfillAlert>[],
+      newOverfills: const <OverfillAlert>[],
+      unauthorised: sortedOpen(s.loadUnauthorisedOpen().values),
+      unauthorisedEvents: const <UnauthorisedEvent>[],
     );
   }
 
-  // 2. Despachos incrementales.
+  // 2. Despachos incrementales (un solo fetch para ambas auditorias).
   final watermark = s.dispenseWatermark;
   final since = (watermark ?? now.subtract(kDispenseLookback))
       .subtract(kDeliveryWatermarkOverlap);
   final dispenses = await client.fetchDispenses(updatedFrom: since);
 
-  // 3. Deteccion + dedup one-shot por dispense id. TODOS los detectados se
-  // marcan como vistos (silenciados incluidos): des-silenciar un producto no
-  // debe replantear sobrellenados viejos.
-  final detected = detectOverfills(dispenses: dispenses, limits: limits);
-  final seen = s.loadNotifiedOverfillIds();
-  final newAlerts = [
-    for (final o in detected)
-      if (!seen.contains(o.dispenseId)) o,
-  ];
-  await s.saveNotifiedOverfillIds(
-    {...seen, for (final o in detected) o.dispenseId},
-    now: now,
-  );
+  // 3a. Sobrellenados SFL: dedup one-shot por dispense id. TODOS los detectados
+  // se marcan como vistos (silenciados incluidos).
+  var overfills = s.loadOverfillSnapshot();
+  var newOverfills = const <OverfillAlert>[];
+  if (overfillEnabled) {
+    final detected = detectOverfills(dispenses: dispenses, limits: limits);
+    final seen = s.loadNotifiedOverfillIds();
+    newOverfills = [
+      for (final o in detected)
+        if (!seen.contains(o.dispenseId)) o,
+    ];
+    await s.saveNotifiedOverfillIds(
+      {...seen, for (final o in detected) o.dispenseId},
+      now: now,
+    );
+    final cutoff = now.subtract(const Duration(days: kOverfillKeepDays));
+    final byId = <String, OverfillAlert>{
+      for (final o in s.loadOverfillSnapshot()) o.dispenseId: o,
+      for (final o in detected) o.dispenseId: o,
+    };
+    overfills = byId.values
+        .where((o) => (o.collectedAt ?? now).isAfter(cutoff))
+        .toList()
+      ..sort((a, b) {
+        final ta = a.collectedAt ?? DateTime(0);
+        final tb = b.collectedAt ?? DateTime(0);
+        return tb.compareTo(ta);
+      });
+    await s.saveOverfillSnapshot(overfills);
+  }
 
-  // 4. Snapshot local (ventana kOverfillKeepDays, reemplazo por id).
-  final cutoff = now.subtract(const Duration(days: kOverfillKeepDays));
-  final byId = <String, OverfillAlert>{
-    for (final o in s.loadOverfillSnapshot()) o.dispenseId: o,
-    for (final o in detected) o.dispenseId: o,
-  };
-  final merged = byId.values
-      .where((o) => (o.collectedAt ?? now).isAfter(cutoff))
-      .toList()
-    ..sort((a, b) {
-      final ta = a.collectedAt ?? DateTime(0);
-      final tb = b.collectedAt ?? DateTime(0);
-      return tb.compareTo(ta);
-    });
-  await s.saveOverfillSnapshot(merged);
+  // 3b. UNAUTHORISED sin ID: transiciones contra el conjunto de abiertos.
+  var unauthorised = sortedOpen(s.loadUnauthorisedOpen().values);
+  var unauthorisedEvents = const <UnauthorisedEvent>[];
+  if (unauthEnabled) {
+    final diff = diffUnauthorised(
+      previousOpen: s.loadUnauthorisedOpen(),
+      fetched: dispenses,
+      normalizedLanes: settings.normalizedUnauthorisedLanes,
+      now: now,
+    );
+    await s.saveUnauthorisedOpen(diff.updatedOpen, now: now);
+    unauthorised = sortedOpen(diff.updatedOpen.values);
+    unauthorisedEvents = diff.events;
+  }
 
-  // 5. Watermark al mayor recordUpdatedAt visto.
+  // 4. Watermark al mayor recordUpdatedAt visto (una vez para ambas).
   var maxUpdated = watermark ?? since;
   for (final d in dispenses) {
     final u = d.updatedAt;
@@ -278,5 +350,10 @@ Future<({List<OverfillAlert> overfills, List<OverfillAlert> newAlerts})>
   }
   await s.saveDispenseWatermark(maxUpdated);
 
-  return (overfills: merged, newAlerts: newAlerts);
+  return (
+    overfills: overfills,
+    newOverfills: newOverfills,
+    unauthorised: unauthorised,
+    unauthorisedEvents: unauthorisedEvents,
+  );
 }

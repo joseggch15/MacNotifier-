@@ -11,10 +11,12 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/adaptiq_client.dart';
 import '../background/background_scheduler.dart';
 import '../background/health_runner.dart';
 import '../config/app_settings.dart';
 import '../core/health_check.dart';
+import '../core/unauthorised_check.dart';
 import '../storage/app_store.dart';
 
 /// Inyectado en `main()` con la instancia real respaldada por
@@ -99,3 +101,51 @@ class ConsolesController extends AsyncNotifier<HealthCheckResult> {
     }
   }
 }
+
+/// Segmento temporal seleccionado en la pestaña "Sin ID". Por defecto semanal:
+/// suficiente para no perder lo reciente sin descargar el historial entero.
+final unauthPeriodProvider =
+    StateProvider<UnauthPeriod>((_) => UnauthPeriod.weekly);
+
+/// Vista EN VIVO de despachos no autorizados sin ID, consultada por el segmento
+/// [unauthPeriodProvider] (no incremental). A diferencia del poller —que solo
+/// detecta TRANSICIONES nuevas para notificar— esto consulta toda la ventana y
+/// filtra client-side, asi muestra TODO lo que sigue sin asignar (incluido lo
+/// anterior al watermark del poller). Mismo patron que la pantalla de Reportes.
+///
+/// `autoDispose` + `keepAlive` tras la primera carga: la consulta (que puede ser
+/// pesada en ventanas largas) se dispara solo cuando se abre la pestaña y luego
+/// se cachea hasta que cambie el segmento o se refresque a mano.
+final unauthorisedViewProvider =
+    FutureProvider.autoDispose<List<UnauthorisedTxn>>((ref) async {
+  final settings = ref.watch(settingsProvider);
+  final period = ref.watch(unauthPeriodProvider);
+  if (!settings.isConfigured || !settings.monitorUnauthorised) {
+    return const <UnauthorisedTxn>[];
+  }
+  final link = ref.keepAlive();
+  final store = ref.read(appStoreProvider);
+  final client = AdaptIQClient(
+    settings,
+    siteId: store.cachedSiteId,
+    knownOptionalFields: store.cachedAdaptMacFields,
+    equipmentField: store.cachedEquipmentField,
+  );
+  try {
+    final range = period.range(DateTime.now());
+    final dispenses = await client.fetchDispenses(updatedFrom: range.start);
+    // Persiste el site id por si se autodescubrio en esta consulta.
+    await store.saveCachedSiteId(client.siteId);
+    return detectUnassignedUnauthorised(
+      dispenses: dispenses,
+      normalizedLanes: settings.normalizedUnauthorisedLanes,
+      start: range.start,
+      end: range.end,
+    );
+  } on Object {
+    link.close(); // un fallo no se cachea: el proximo intento vuelve a pedir
+    rethrow;
+  } finally {
+    client.close();
+  }
+});

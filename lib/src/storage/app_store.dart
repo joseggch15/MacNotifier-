@@ -23,6 +23,7 @@ import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
+import '../core/unauthorised_check.dart';
 import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
 
@@ -39,11 +40,14 @@ class AppStore {
   static const _kPollSeconds = 'cfg.pollSeconds';
   static const _kBgMinutes = 'cfg.backgroundMinutes';
   static const _kStaleMinutes = 'cfg.staleMinutes';
+  static const _kOfflineAlarmMinutes = 'cfg.offlineAlarmMinutes';
   static const _kNotifEnabled = 'cfg.notificationsEnabled';
   static const _kNotifRecovery = 'cfg.notifyRecovery';
   static const _kMonitorDeliveries = 'cfg.monitorDeliveries';
   static const _kVariancePct = 'cfg.varianceThresholdPct';
   static const _kMonitorOverfill = 'cfg.monitorOverfill';
+  static const _kMonitorUnauthorised = 'cfg.monitorUnauthorised';
+  static const _kUnauthorisedLanes = 'cfg.unauthorisedLanes';
   static const _kMutedSfl = 'cfg.mutedSflProducts';
   static const _kMutedDeliveries = 'cfg.mutedDeliveryProducts';
   static const _kMutedConsoles = 'cfg.mutedConsoles';
@@ -59,6 +63,9 @@ class AppStore {
   static const _kConditions = 'state.conditions';
   static const _kSnapshot = 'state.snapshot';
   static const _kLastError = 'state.lastError';
+  static const _kOfflineSince = 'state.offlineSince';
+  static const _kOfflineAlarmed = 'state.offlineAlarmed';
+  static const _kUnauthorisedOpen = 'state.unauthorised.open';
   static const _kDeliveryWatermark = 'state.deliveries.watermark';
   static const _kDeliveryConditions = 'state.deliveries.conditions';
   static const _kDeliverySnapshot = 'state.deliveries.snapshot';
@@ -80,12 +87,17 @@ class AppStore {
       pollSeconds: _prefs.getInt(_kPollSeconds) ?? kDefaultPollSeconds,
       backgroundMinutes: _prefs.getInt(_kBgMinutes) ?? kDefaultBackgroundMinutes,
       staleMinutes: _prefs.getInt(_kStaleMinutes) ?? kDefaultStaleMinutes,
+      offlineAlarmMinutes:
+          _prefs.getInt(_kOfflineAlarmMinutes) ?? kDefaultOfflineAlarmMinutes,
       notificationsEnabled: _prefs.getBool(_kNotifEnabled) ?? true,
       notifyRecovery: _prefs.getBool(_kNotifRecovery) ?? true,
       monitorDeliveries: _prefs.getBool(_kMonitorDeliveries) ?? true,
       varianceThresholdPct:
           _prefs.getDouble(_kVariancePct) ?? kDefaultVarianceThresholdPct,
       monitorOverfill: _prefs.getBool(_kMonitorOverfill) ?? true,
+      monitorUnauthorised: _prefs.getBool(_kMonitorUnauthorised) ?? true,
+      unauthorisedLanes: _prefs.getStringList(_kUnauthorisedLanes) ??
+          kDefaultUnauthorisedLanes,
       mutedSflProducts: _prefs.getStringList(_kMutedSfl) ?? const [],
       mutedDeliveryProducts:
           _prefs.getStringList(_kMutedDeliveries) ?? const [],
@@ -103,11 +115,14 @@ class AppStore {
     await _prefs.setInt(_kPollSeconds, s.pollSeconds);
     await _prefs.setInt(_kBgMinutes, s.backgroundMinutes);
     await _prefs.setInt(_kStaleMinutes, s.staleMinutes);
+    await _prefs.setInt(_kOfflineAlarmMinutes, s.offlineAlarmMinutes);
     await _prefs.setBool(_kNotifEnabled, s.notificationsEnabled);
     await _prefs.setBool(_kNotifRecovery, s.notifyRecovery);
     await _prefs.setBool(_kMonitorDeliveries, s.monitorDeliveries);
     await _prefs.setDouble(_kVariancePct, s.varianceThresholdPct);
     await _prefs.setBool(_kMonitorOverfill, s.monitorOverfill);
+    await _prefs.setBool(_kMonitorUnauthorised, s.monitorUnauthorised);
+    await _prefs.setStringList(_kUnauthorisedLanes, s.unauthorisedLanes);
     await _prefs.setStringList(_kMutedSfl, s.mutedSflProducts);
     await _prefs.setStringList(_kMutedDeliveries, s.mutedDeliveryProducts);
     await _prefs.setStringList(_kMutedConsoles, s.mutedConsoles);
@@ -189,6 +204,8 @@ class AppStore {
         fetchedAt: fetchedAt.toUtc(),
         deliveries: loadDeliverySnapshot(),
         overfills: loadOverfillSnapshot(),
+        unauthorised: sortedOpen(loadUnauthorisedOpen().values),
+        offlineSince: loadOfflineSince(),
       );
     } on FormatException {
       return null;
@@ -203,6 +220,82 @@ class AppStore {
         'consoles': [for (final c in result.consoles) c.toJson()],
       }),
     );
+  }
+
+  // -- alarma de caida prolongada (offline sostenido) -----------------------------
+
+  /// code -> instante de la primera observacion offline (UTC).
+  Map<String, DateTime> loadOfflineSince() {
+    final raw = _prefs.getString(_kOfflineSince);
+    if (raw == null) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return {};
+      final out = <String, DateTime>{};
+      for (final e in decoded.entries) {
+        final dt = DateTime.tryParse(e.value?.toString() ?? '');
+        if (dt != null) out[e.key] = dt.toUtc();
+      }
+      return out;
+    } on FormatException {
+      return {};
+    }
+  }
+
+  Future<void> saveOfflineSince(Map<String, DateTime> since) async {
+    await _prefs.setString(
+      _kOfflineSince,
+      jsonEncode({
+        for (final e in since.entries) e.key: e.value.toUtc().toIso8601String(),
+      }),
+    );
+  }
+
+  /// Consolas que ya cruzaron el umbral de alarma (dedup por episodio).
+  Set<String> loadOfflineAlarmed() {
+    return (_prefs.getStringList(_kOfflineAlarmed) ?? const []).toSet();
+  }
+
+  Future<void> saveOfflineAlarmed(Set<String> codes) async {
+    await _prefs.setStringList(_kOfflineAlarmed, codes.toList()..sort());
+  }
+
+  // -- despachos UNAUTHORISED sin ID (abiertos) ----------------------------------
+
+  /// Mapa id -> txn de los despachos no autorizados sin ID aun ABIERTOS.
+  Map<String, UnauthorisedTxn> loadUnauthorisedOpen() {
+    final raw = _prefs.getString(_kUnauthorisedOpen);
+    if (raw == null) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return {};
+      final out = <String, UnauthorisedTxn>{};
+      for (final e in decoded.entries) {
+        final value = e.value;
+        if (value is Map<String, dynamic>) {
+          out[e.key] = UnauthorisedTxn.fromJson(value);
+        }
+      }
+      return out;
+    } on FormatException {
+      return {};
+    }
+  }
+
+  /// Persiste los abiertos, podando los que llevan demasiado tiempo sin
+  /// asignarse (por firstSeen / collectedAt) para acotar el almacenamiento.
+  Future<void> saveUnauthorisedOpen(
+    Map<String, UnauthorisedTxn> open, {
+    required DateTime now,
+  }) async {
+    final cutoff = now.subtract(const Duration(days: kUnauthorisedKeepDays));
+    final encoded = <String, dynamic>{};
+    for (final e in open.entries) {
+      final ref = e.value.firstSeen ?? e.value.collectedAt;
+      if (ref != null && ref.toUtc().isBefore(cutoff)) continue; // poda
+      encoded[e.key] = e.value.toJson();
+    }
+    await _prefs.setString(_kUnauthorisedOpen, jsonEncode(encoded));
   }
 
   // -- estado de entregas (auditoria de deliveries) -----------------------------------

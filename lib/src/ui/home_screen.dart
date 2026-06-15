@@ -17,6 +17,7 @@ import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
+import '../core/unauthorised_check.dart';
 import '../core/util.dart';
 import '../i18n/l10n.dart';
 import '../models/adapt_mac.dart';
@@ -53,7 +54,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final l = L10n(settings.languageCode);
 
     return DefaultTabController(
-      length: 3,
+      length: 4,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('AdaptIQ Monitor'),
@@ -61,7 +62,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             IconButton(
               tooltip: l.t('Refrescar ahora', 'Refresh now'),
               icon: const Icon(Icons.refresh),
-              onPressed: () => ref.read(consolesProvider.notifier).refreshNow(),
+              onPressed: () {
+                ref.read(consolesProvider.notifier).refreshNow();
+                ref.invalidate(unauthorisedViewProvider);
+              },
             ),
             IconButton(
               tooltip: l.t('Reportes', 'Reports'),
@@ -78,7 +82,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
             ),
           ],
-          bottom: TabBar(tabs: [
+          bottom: TabBar(isScrollable: true, tabs: [
             Tab(
                 icon: const Icon(Icons.dns_outlined),
                 text: l.t('Consolas', 'Consoles')),
@@ -86,6 +90,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 icon: const Icon(Icons.local_shipping_outlined),
                 text: l.t('Entregas', 'Deliveries')),
             const Tab(icon: Icon(Icons.local_gas_station_outlined), text: 'SFL'),
+            Tab(
+                icon: const Icon(Icons.gpp_maybe_outlined),
+                text: l.t('Sin ID', 'No ID')),
           ]),
         ),
         body: !settings.isConfigured
@@ -120,6 +127,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         ),
                         _OverfillTab(
                           result: result,
+                          filter: _filter,
+                          settings: settings,
+                        ),
+                        _UnauthorisedTab(
                           filter: _filter,
                           settings: settings,
                         ),
@@ -418,6 +429,8 @@ class _ConsolesTab extends ConsumerWidget {
                       l: l,
                       muted: settings.isConsoleMuted(visible[i].code),
                       onToggleMute: () => _toggleMute(ref, visible[i].code),
+                      offlineSince: result.offlineSince[visible[i].code],
+                      alarmAfter: settings.offlineAlarmAfter,
                     ),
                   ),
           ),
@@ -435,6 +448,8 @@ class _ConsoleTile extends StatelessWidget {
     required this.l,
     required this.muted,
     required this.onToggleMute,
+    this.offlineSince,
+    required this.alarmAfter,
   });
 
   final AdaptMac console;
@@ -446,6 +461,27 @@ class _ConsoleTile extends StatelessWidget {
   final bool muted;
   final VoidCallback onToggleMute;
 
+  /// Instante en que el monitor vio la consola OFFLINE por primera vez (para
+  /// "lleva N min sin conexion" y la alarma de caida prolongada).
+  final DateTime? offlineSince;
+  final Duration alarmAfter;
+
+  bool get _isOffline => conditions.contains(ConsoleCondition.offline);
+
+  /// Duracion de la caida actual (si la consola esta offline y se conoce el
+  /// inicio); null en cualquier otro caso.
+  Duration? get _offlineFor {
+    if (!_isOffline || offlineSince == null) return null;
+    final d = now.difference(offlineSince!);
+    return d.isNegative ? Duration.zero : d;
+  }
+
+  /// La caida ya cruzo el umbral de alarma "estilo despertador".
+  bool get _alarming {
+    final d = _offlineFor;
+    return d != null && d >= alarmAfter;
+  }
+
   Color get _statusColor {
     if (conditions.contains(ConsoleCondition.keyBypass)) return Colors.purpleAccent;
     if (conditions.contains(ConsoleCondition.offline)) return Colors.red;
@@ -453,26 +489,52 @@ class _ConsoleTile extends StatelessWidget {
     return Colors.green;
   }
 
+  /// "32 min" / "2 h 5 min" — duracion compacta de la caida.
+  String _fmtDuration(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes % 60;
+    if (h <= 0) return l.t('$m min', '$m min');
+    return l.t('$h h $m min', '$h h $m min');
+  }
+
   @override
   Widget build(BuildContext context) {
     final relative = l.isEn ? relativeEn : relativeEs;
+    final offlineFor = _offlineFor;
     final subtitleParts = <String>[
       if ((console.description ?? '').isNotEmpty) console.description!,
       if ((console.site ?? '').isNotEmpty) console.site!,
-      if (console.lastSuccessfulComms != null)
+      if (offlineFor != null)
+        l.t('sin conexion hace ${_fmtDuration(offlineFor)}',
+            'offline for ${_fmtDuration(offlineFor)}')
+      else if (console.lastSuccessfulComms != null)
         '${l.t('Ult. com.', 'Last comms')} '
             '${relative(console.lastSuccessfulComms!, now: now)}',
     ];
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      shape: _alarming
+          ? RoundedRectangleBorder(
+              side: const BorderSide(color: Colors.red, width: 1.5),
+              borderRadius: BorderRadius.circular(12),
+            )
+          : null,
       child: ListTile(
         dense: true,
-        leading: Icon(Icons.circle, size: 14, color: _statusColor),
-        title: Row(
+        leading: Icon(
+            _alarming ? Icons.alarm : Icons.circle,
+            size: _alarming ? 18 : 14,
+            color: _statusColor),
+        title: Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 4,
+          runSpacing: 2,
           children: [
-            Text(console.code,
-                style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(width: 8),
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Text(console.code,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
             if (conditions.contains(ConsoleCondition.keyBypass))
               const _Badge('BYPASS', Colors.purpleAccent),
             if (conditions.contains(ConsoleCondition.offline))
@@ -480,6 +542,8 @@ class _ConsoleTile extends StatelessWidget {
             if (conditions.contains(ConsoleCondition.stale))
               const _Badge('STALE', Colors.orange),
             if (conditions.isEmpty) const _Badge('ONLINE', Colors.green),
+            if (_alarming && offlineFor != null)
+              _Badge('⏰ ${_fmtDuration(offlineFor).toUpperCase()}', Colors.red),
             if (muted) _Badge(l.t('SILENCIADO', 'MUTED'), Colors.blueGrey),
           ],
         ),
@@ -866,6 +930,200 @@ class _OverfillTile extends StatelessWidget {
             if ((o.fieldUser ?? '').isNotEmpty) o.fieldUser!,
             if (o.collectedAt != null)
               DateFormat('dd/MM HH:mm').format(o.collectedAt!.toLocal()),
+          ].join(' · '),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+    );
+  }
+}
+
+// ===========================================================================
+// Pestaña Sin ID (despachos UNAUTHORISED sin equipo asignado)
+// ===========================================================================
+
+class _UnauthorisedTab extends ConsumerWidget {
+  const _UnauthorisedTab({
+    required this.filter,
+    required this.settings,
+  });
+
+  final String filter;
+  final AppSettings settings;
+
+  static final NumberFormat _litres = NumberFormat('#,##0.0');
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = L10n(settings.languageCode);
+    if (!settings.monitorUnauthorised) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text(
+            l.t(
+                'El monitoreo de despachos no autorizados esta desactivado.\n'
+                    'Activalo en Configuracion → Despachos sin ID.',
+                'Unauthorised dispense monitoring is disabled.\n'
+                    'Enable it in Settings → Dispenses without ID.'),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+
+    final period = ref.watch(unauthPeriodProvider);
+    final viewAsync = ref.watch(unauthorisedViewProvider);
+
+    return Column(
+      children: [
+        // Selector de segmento temporal (All/Diario/Semanal/Mensual/Anual),
+        // inspirado en las ventanas de Reportes/SFL/Entregas.
+        SizedBox(
+          height: 44,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            children: [
+              for (final p in UnauthPeriod.values)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(p.label(l)),
+                    selected: p == period,
+                    onSelected: (_) =>
+                        ref.read(unauthPeriodProvider.notifier).state = p,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: viewAsync.when(
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (e, _) => _ErrorView(message: e.toString()),
+            data: (all) => _buildList(context, ref, l, period, all),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildList(BuildContext context, WidgetRef ref, L10n l,
+      UnauthPeriod period, List<UnauthorisedTxn> all) {
+    final query = filter.trim().toLowerCase();
+    final visible = all.where((t) {
+      if (query.isEmpty) return true;
+      return '${t.lane ?? ''} ${t.product ?? ''} ${t.fieldUser ?? ''} ${t.adaptMac ?? ''}'
+          .toLowerCase()
+          .contains(query);
+    }).toList();
+
+    final totalVolume =
+        visible.fold<double>(0, (acc, t) => acc + (t.volume ?? 0));
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _Kpi(
+                label: '${l.t('Sin ID', 'Without ID')} · ${period.label(l)}',
+                value: '${visible.length}',
+                color: visible.isEmpty ? Colors.green : Colors.red,
+              ),
+              _Kpi(
+                label: l.t('Volumen sin asignar', 'Unassigned volume'),
+                value: '${_litres.format(totalVolume)} L',
+                color: totalVolume == 0 ? Colors.green : Colors.orange,
+              ),
+              _Kpi(
+                label: l.t('Lanes', 'Lanes'),
+                value: '${settings.unauthorisedLanes.length}',
+                color: Colors.blue,
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () async {
+              ref.invalidate(unauthorisedViewProvider);
+              await ref.read(unauthorisedViewProvider.future);
+            },
+            child: visible.isEmpty
+                ? ListView(
+                    children: [
+                      const SizedBox(height: 120),
+                      Center(
+                          child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 32),
+                        child: Text(
+                          l.t(
+                              'Sin despachos no autorizados pendientes de '
+                                  'asignar ID en los lanes vigilados '
+                                  '(${period.label(l).toLowerCase()}).',
+                              'No unauthorised dispenses awaiting an ID in the '
+                                  'watched lanes (${period.label(l).toLowerCase()}).'),
+                          textAlign: TextAlign.center,
+                        ),
+                      )),
+                    ],
+                  )
+                : ListView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: visible.length,
+                    itemBuilder: (context, i) =>
+                        _UnauthorisedTile(txn: visible[i], l: l),
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _UnauthorisedTile extends StatelessWidget {
+  const _UnauthorisedTile({required this.txn, required this.l});
+
+  final UnauthorisedTxn txn;
+  final L10n l;
+
+  static final NumberFormat _litres = NumberFormat('#,##0.0');
+
+  @override
+  Widget build(BuildContext context) {
+    final t = txn;
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: ListTile(
+        dense: true,
+        leading: const Icon(Icons.gpp_maybe, size: 18, color: Colors.red),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(t.lane ?? l.t('Despacho sin ID', 'Dispense without ID'),
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(width: 8),
+            _Badge(l.t('SIN ID', 'NO ID'), Colors.red),
+            if (t.volume != null)
+              _Badge('${_litres.format(t.volume)} L', Colors.orange),
+          ],
+        ),
+        subtitle: Text(
+          [
+            if ((t.product ?? '').isNotEmpty) t.product!,
+            if ((t.fieldUser ?? '').isNotEmpty)
+              '${l.t('Operador', 'Operator')}: ${t.fieldUser}',
+            if ((t.adaptMac ?? '').isNotEmpty) t.adaptMac!,
+            if (t.collectedAt != null)
+              DateFormat('dd/MM HH:mm').format(t.collectedAt!.toLocal()),
           ].join(' · '),
           maxLines: 2,
           overflow: TextOverflow.ellipsis,

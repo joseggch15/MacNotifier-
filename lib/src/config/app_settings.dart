@@ -13,6 +13,27 @@ const kDefaultBackgroundMinutes = 15; // minimo que permite WorkManager/iOS
 const kDefaultStaleMinutes = 30; // = config.ADAPTMAC_STALE_MINUTES de MSGQ
 const kPageSize = 100; // la API limita a 100 registros por pagina
 
+// --- Alarma de caida prolongada (offline sostenido) -------------------------
+/// Minutos que una consola OFFLINE (no silenciada) debe permanecer caida antes
+/// de ESCALAR de la notificacion informativa a una alarma "estilo despertador"
+/// (sonido insistente + pantalla completa). Por defecto 30 min, igual que el
+/// umbral stale de MSGQ: media hora caida ya no es un parpadeo de red.
+const kDefaultOfflineAlarmMinutes = 30;
+
+// --- Despachos UNAUTHORISED sin equipo asignado -----------------------------
+/// Puntos de despacho (lanes) cuyos despachos `Unauthorised` SIN ID de equipo
+/// se vigilan. Por defecto los tres carriles del LFO de Merian que el auditor
+/// revisa en AdaptIQ (Movements -> Dispenses, filtro Types: Unauthorised).
+const kDefaultUnauthorisedLanes = <String>[
+  'LFO Delivery and LV Bay (Lane 1)',
+  'LFO Dispense Lane 2',
+  'LFO Dispense Lane 3',
+];
+
+/// Cuanto se conserva un despacho UNAUTHORISED "abierto" (sin ID) en el estado
+/// local antes de podarlo si nunca llega a asignarsele un equipo.
+const kUnauthorisedKeepDays = 30;
+
 // --- Auditoria de entregas (port de DELIVERY_* en msgq/config.py) -----------
 /// Desviacion relativa minima (%) medidor-vs-guia para marcar una entrega.
 const kDefaultVarianceThresholdPct = 1.0;
@@ -75,11 +96,14 @@ class AppSettings {
     this.pollSeconds = kDefaultPollSeconds,
     this.backgroundMinutes = kDefaultBackgroundMinutes,
     this.staleMinutes = kDefaultStaleMinutes,
+    this.offlineAlarmMinutes = kDefaultOfflineAlarmMinutes,
     this.notificationsEnabled = true,
     this.notifyRecovery = true,
     this.monitorDeliveries = true,
     this.varianceThresholdPct = kDefaultVarianceThresholdPct,
     this.monitorOverfill = true,
+    this.monitorUnauthorised = true,
+    this.unauthorisedLanes = kDefaultUnauthorisedLanes,
     this.mutedSflProducts = const [],
     this.mutedDeliveryProducts = const [],
     this.mutedConsoles = const [],
@@ -109,6 +133,10 @@ class AppSettings {
   /// "stale" aunque el flag `online` siga en verdadero.
   final int staleMinutes;
 
+  /// Minutos que una consola OFFLINE no silenciada debe permanecer caida antes
+  /// de escalar a la alarma "estilo despertador".
+  final int offlineAlarmMinutes;
+
   /// Interruptor global de notificaciones locales.
   final bool notificationsEnabled;
 
@@ -125,6 +153,14 @@ class AppSettings {
   /// Monitorear sobrellenados de SFL (despachos que exceden el Safe Fill Level
   /// del equipo para ese producto — la alarma "Equipment Overfill" de AdaptIQ).
   final bool monitorOverfill;
+
+  /// Monitorear despachos `Unauthorised` SIN ID de equipo asignado en los
+  /// [unauthorisedLanes]: tan pronto AdaptIQ les asigna un equipo, salen de la
+  /// lista.
+  final bool monitorUnauthorised;
+
+  /// Puntos de despacho vigilados para el monitor de no autorizados sin ID.
+  final List<String> unauthorisedLanes;
 
   /// Productos SILENCIADOS para las alertas de SFL (etiquetas normalizadas con
   /// [normProduct]). El interes principal es el diesel: el resto se puede callar.
@@ -153,10 +189,18 @@ class AppSettings {
   bool isConsoleMuted(String? code) =>
       code != null && mutedConsoles.contains(code.trim());
 
+  /// Lanes vigilados, normalizados (trim + upper) para cruzar contra el punto
+  /// de despacho de cada movimiento — misma normalizacion que los productos.
+  Set<String> get normalizedUnauthorisedLanes =>
+      {for (final lane in unauthorisedLanes) normProduct(lane)}
+        ..removeWhere((l) => l.isEmpty);
+
   /// Sin token no se puede hablar con la API real.
   bool get isConfigured => token.trim().isNotEmpty;
 
   Duration get staleAfter => Duration(minutes: staleMinutes);
+
+  Duration get offlineAlarmAfter => Duration(minutes: offlineAlarmMinutes);
 
   AppSettings copyWith({
     String? endpoint,
@@ -166,11 +210,14 @@ class AppSettings {
     int? pollSeconds,
     int? backgroundMinutes,
     int? staleMinutes,
+    int? offlineAlarmMinutes,
     bool? notificationsEnabled,
     bool? notifyRecovery,
     bool? monitorDeliveries,
     double? varianceThresholdPct,
     bool? monitorOverfill,
+    bool? monitorUnauthorised,
+    List<String>? unauthorisedLanes,
     List<String>? mutedSflProducts,
     List<String>? mutedDeliveryProducts,
     List<String>? mutedConsoles,
@@ -185,11 +232,14 @@ class AppSettings {
       pollSeconds: pollSeconds ?? this.pollSeconds,
       backgroundMinutes: backgroundMinutes ?? this.backgroundMinutes,
       staleMinutes: staleMinutes ?? this.staleMinutes,
+      offlineAlarmMinutes: offlineAlarmMinutes ?? this.offlineAlarmMinutes,
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       notifyRecovery: notifyRecovery ?? this.notifyRecovery,
       monitorDeliveries: monitorDeliveries ?? this.monitorDeliveries,
       varianceThresholdPct: varianceThresholdPct ?? this.varianceThresholdPct,
       monitorOverfill: monitorOverfill ?? this.monitorOverfill,
+      monitorUnauthorised: monitorUnauthorised ?? this.monitorUnauthorised,
+      unauthorisedLanes: unauthorisedLanes ?? this.unauthorisedLanes,
       mutedSflProducts: mutedSflProducts ?? this.mutedSflProducts,
       mutedDeliveryProducts:
           mutedDeliveryProducts ?? this.mutedDeliveryProducts,

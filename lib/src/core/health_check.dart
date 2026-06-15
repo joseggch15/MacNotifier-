@@ -23,6 +23,7 @@ import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
 import 'delivery_check.dart';
 import 'sfl_check.dart';
+import 'unauthorised_check.dart';
 
 /// Orden del enum = severidad (se usa para ordenar eventos y la lista de UI).
 enum ConsoleCondition { keyBypass, offline, stale }
@@ -54,6 +55,10 @@ class HealthCheckResult {
     this.deliveryEvents = const [],
     this.overfills = const [],
     this.overfillEvents = const [],
+    this.unauthorised = const [],
+    this.unauthorisedEvents = const [],
+    this.offlineSince = const {},
+    this.offlineAlarmEvents = const [],
   });
 
   final List<AdaptMac> consoles;
@@ -69,6 +74,20 @@ class HealthCheckResult {
 
   /// Sobrellenados NUEVOS de este ciclo (ya filtrados por silenciado).
   final List<OverfillAlert> overfillEvents;
+
+  /// Despachos UNAUTHORISED sin ID ABIERTOS (para la pestaña dedicada).
+  final List<UnauthorisedTxn> unauthorised;
+
+  /// Transiciones de no autorizados de este ciclo (nuevos / asignados).
+  final List<UnauthorisedEvent> unauthorisedEvents;
+
+  /// code -> instante en que la consola se observo OFFLINE por primera vez
+  /// (para mostrar "lleva N min sin conexion" y disparar la alarma).
+  final Map<String, DateTime> offlineSince;
+
+  /// Consolas que ACABAN de cruzar el umbral de alarma este ciclo (ya
+  /// filtradas por silenciado): la alarma "estilo despertador".
+  final List<AdaptMac> offlineAlarmEvents;
 
   int get total => consoles.length;
   int get onlineCount => consoles.where((c) => c.online == true).length;
@@ -151,4 +170,58 @@ List<ConsoleEvent> diffEvents({
 int severityRank(Set<ConsoleCondition> conditions) {
   if (conditions.isEmpty) return ConsoleCondition.values.length;
   return conditions.map((c) => c.index).reduce((a, b) => a < b ? a : b);
+}
+
+/// Resultado del seguimiento de caidas PROLONGADAS (offline sostenido).
+class OfflineAlarmResult {
+  const OfflineAlarmResult({
+    required this.offlineSince,
+    required this.alarmed,
+    required this.newAlarms,
+  });
+
+  /// code -> instante de la primera observacion offline (a persistir).
+  final Map<String, DateTime> offlineSince;
+
+  /// Consolas YA en estado de alarma (cruzaron el umbral): el dedup por
+  /// episodio — mientras siga offline no se vuelve a alarmar.
+  final Set<String> alarmed;
+
+  /// Consolas que cruzaron el umbral EN ESTE ciclo (a notificar).
+  final List<AdaptMac> newAlarms;
+}
+
+/// Mantiene, para cada consola OFFLINE, desde cuando lo esta, y decide cuales
+/// acaban de superar [alarmAfter] (sin haberlas alarmado antes en este mismo
+/// episodio de caida).
+///
+/// El silenciado NO se aplica aqui: igual que el resto del motor, el estado de
+/// dedup se mantiene completo y el filtrado por consola silenciada se hace al
+/// notificar. Una consola que vuelve ONLINE se borra de ambos conjuntos, de
+/// modo que una caida futura re-arma la alarma.
+OfflineAlarmResult trackOfflineAlarms({
+  required List<AdaptMac> consoles,
+  required Map<String, DateTime> previousSince,
+  required Set<String> previousAlarmed,
+  required Duration alarmAfter,
+  required DateTime now,
+}) {
+  final since = <String, DateTime>{};
+  final alarmed = <String>{};
+  final newAlarms = <AdaptMac>[];
+  for (final mac in consoles) {
+    if (mac.online != false) continue; // online o desconocido: no es caida
+    final start = previousSince[mac.code] ?? now;
+    since[mac.code] = start;
+    final wasAlarmed = previousAlarmed.contains(mac.code);
+    if (now.difference(start) >= alarmAfter) {
+      alarmed.add(mac.code);
+      if (!wasAlarmed) newAlarms.add(mac);
+    } else if (wasAlarmed) {
+      // Conserva el flag (reloj hacia atras u otra anomalia): no re-dispara.
+      alarmed.add(mac.code);
+    }
+  }
+  return OfflineAlarmResult(
+      offlineSince: since, alarmed: alarmed, newAlarms: newAlarms);
 }
