@@ -226,6 +226,45 @@ void main() {
     });
   });
 
+  group('openInWindow (periodo = filtro local sobre el set de abiertos)', () {
+    UnauthorisedTxn txn(String id, {DateTime? collectedAt}) =>
+        UnauthorisedTxn(id: id, collectedAt: collectedAt);
+
+    test('recorta por collectedAt a la ventana [start, end)', () {
+      final open = [
+        txn('hoy', collectedAt: now),
+        txn('viejo', collectedAt: now.subtract(const Duration(days: 10))),
+      ];
+      final out = openInWindow(open,
+          start: now.subtract(const Duration(days: 6)), end: now);
+      expect(out.map((t) => t.id), ['hoy']);
+    });
+
+    test('"Todos" (start null) incluye lo viejo y lo sin fecha', () {
+      final open = [
+        txn('a', collectedAt: now.subtract(const Duration(days: 400))),
+        txn('b', collectedAt: null),
+      ];
+      final out = openInWindow(open, start: null, end: now);
+      expect(out.map((t) => t.id).toSet(), {'a', 'b'});
+    });
+
+    test('un periodo acotado excluye lo sin fecha (no se puede ubicar)', () {
+      final out = openInWindow([txn('b', collectedAt: null)],
+          start: now.subtract(const Duration(days: 1)), end: now);
+      expect(out, isEmpty);
+    });
+
+    test('ordena los mas recientes primero (igual que sortedOpen)', () {
+      final open = [
+        txn('viejo', collectedAt: now.subtract(const Duration(hours: 2))),
+        txn('nuevo', collectedAt: now),
+      ];
+      final out = openInWindow(open, start: null, end: now);
+      expect(out.map((t) => t.id), ['nuevo', 'viejo']);
+    });
+  });
+
   group('Dispense.fromNode (lane via adaptMac.description)', () {
     test('parsea adaptMac { code description } y el tanque virtual', () {
       final d = Dispense.fromNode({

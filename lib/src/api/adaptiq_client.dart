@@ -164,6 +164,33 @@ class AdaptIQClient {
     return [for (final n in nodes) Dispense.fromNode(n)];
   }
 
+  /// Igual que [fetchDispenses] pero reportando progreso por pagina
+  /// ([onPage]) e interrumpible ([isCancelled]). Para el BACKFILL puntual de
+  /// "Sin ID", que pagina ventanas largas: el poller usa la version one-shot
+  /// sin callbacks para no cargar su camino caliente.
+  Future<List<Dispense>> fetchDispensesProgressive({
+    DateTime? updatedFrom,
+    void Function(int pages, int records)? onPage,
+    bool Function()? isCancelled,
+  }) async {
+    final siteId = await _resolveSiteId();
+    final nodes = await _paginateSiteConnection(
+      queries.dispensesQuery,
+      'dispenses',
+      {
+        'siteId': siteId,
+        'filter': {
+          if (updatedFrom != null)
+            'updatedFrom': updatedFrom.toUtc().toIso8601String(),
+        },
+        'first': kPageSize,
+      },
+      onPage: onPage,
+      isCancelled: isCancelled,
+    );
+    return [for (final n in nodes) Dispense.fromNode(n)];
+  }
+
   /// Mapa de limites SFL {sflKey(equipo, producto): sfl} desde los
   /// `consumptionTanks` del maestro de equipos. Devuelve `null` si el tenant
   /// no expone una conexion de equipos (los sobrellenados no se pueden
@@ -291,11 +318,14 @@ class AdaptIQClient {
   Future<List<Map<String, dynamic>>> _paginateSiteConnection(
     String query,
     String connection,
-    Map<String, dynamic> variables,
-  ) async {
+    Map<String, dynamic> variables, {
+    void Function(int pages, int records)? onPage,
+    bool Function()? isCancelled,
+  }) async {
     final nodes = <Map<String, dynamic>>[];
     String? cursor;
     for (var page = 0; page < 1000; page++) { // cota de seguridad
+      if (isCancelled?.call() ?? false) break;
       final data = await _execute(query, {
         ...variables,
         if (cursor != null) 'after': cursor,
@@ -310,6 +340,7 @@ class AdaptIQClient {
           if (node is Map<String, dynamic>) nodes.add(node);
         }
       }
+      onPage?.call(page + 1, nodes.length);
       final pageInfo = conn['pageInfo'];
       final hasNext =
           pageInfo is Map<String, dynamic> && pageInfo['hasNextPage'] == true;

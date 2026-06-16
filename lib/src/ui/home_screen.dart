@@ -62,10 +62,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             IconButton(
               tooltip: l.t('Refrescar ahora', 'Refresh now'),
               icon: const Icon(Icons.refresh),
-              onPressed: () {
-                ref.read(consolesProvider.notifier).refreshNow();
-                ref.invalidate(unauthorisedViewProvider);
-              },
+              onPressed: () =>
+                  ref.read(consolesProvider.notifier).refreshNow(),
             ),
             IconButton(
               tooltip: l.t('Reportes', 'Reports'),
@@ -131,6 +129,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           settings: settings,
                         ),
                         _UnauthorisedTab(
+                          result: result,
                           filter: _filter,
                           settings: settings,
                         ),
@@ -943,19 +942,42 @@ class _OverfillTile extends StatelessWidget {
 // Pestaña Sin ID (despachos UNAUTHORISED sin equipo asignado)
 // ===========================================================================
 
-class _UnauthorisedTab extends ConsumerWidget {
+class _UnauthorisedTab extends ConsumerStatefulWidget {
   const _UnauthorisedTab({
+    required this.result,
     required this.filter,
     required this.settings,
   });
 
+  final HealthCheckResult result;
   final String filter;
   final AppSettings settings;
 
+  @override
+  ConsumerState<_UnauthorisedTab> createState() => _UnauthorisedTabState();
+}
+
+class _UnauthorisedTabState extends ConsumerState<_UnauthorisedTab> {
   static final NumberFormat _litres = NumberFormat('#,##0.0');
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  void initState() {
+    super.initState();
+    // Siembra el historial "Sin ID" una sola vez por sitio (idempotente: el
+    // controlador ignora la llamada si ya corrio o ya se sembro este sitio).
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => ref.read(unauthBackfillProvider.notifier).ensureStarted(),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Cambio de sitio/endpoint (la pestaña no se re-monta): re-siembra. El
+    // controlador es idempotente — solo actua si el sitio realmente cambio.
+    ref.listen(settingsProvider, (_, __) {
+      ref.read(unauthBackfillProvider.notifier).ensureStarted();
+    });
+    final settings = widget.settings;
     final l = L10n(settings.languageCode);
     if (!settings.monitorUnauthorised) {
       return Center(
@@ -974,7 +996,15 @@ class _UnauthorisedTab extends ConsumerWidget {
     }
 
     final period = ref.watch(unauthPeriodProvider);
-    final viewAsync = ref.watch(unauthorisedViewProvider);
+    final backfill = ref.watch(unauthBackfillProvider);
+    // El periodo es ahora un FILTRO LOCAL sobre el conjunto de abiertos que el
+    // poller ya mantiene (instantaneo): no hay descarga al cambiar de segmento.
+    final range = period.range(DateTime.now());
+    final all = openInWindow(
+      widget.result.unauthorised,
+      start: range.start,
+      end: range.end,
+    );
 
     return Column(
       children: [
@@ -999,20 +1029,18 @@ class _UnauthorisedTab extends ConsumerWidget {
             ],
           ),
         ),
-        Expanded(
-          child: viewAsync.when(
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) => _ErrorView(message: e.toString()),
-            data: (all) => _buildList(context, ref, l, period, all),
-          ),
-        ),
+        if (backfill.running) _BackfillBanner(state: backfill, l: l),
+        if (backfill.error != null)
+          _BackfillError(message: backfill.error!, l: l),
+        Expanded(child: _buildList(context, ref, l, period, all)),
       ],
     );
   }
 
   Widget _buildList(BuildContext context, WidgetRef ref, L10n l,
       UnauthPeriod period, List<UnauthorisedTxn> all) {
-    final query = filter.trim().toLowerCase();
+    final settings = widget.settings;
+    final query = widget.filter.trim().toLowerCase();
     final visible = all.where((t) {
       if (query.isEmpty) return true;
       return '${t.lane ?? ''} ${t.product ?? ''} ${t.fieldUser ?? ''} ${t.adaptMac ?? ''}'
@@ -1052,8 +1080,10 @@ class _UnauthorisedTab extends ConsumerWidget {
         Expanded(
           child: RefreshIndicator(
             onRefresh: () async {
-              ref.invalidate(unauthorisedViewProvider);
-              await ref.read(unauthorisedViewProvider.future);
+              // Refrescar = un ciclo incremental del poller (barato); republica
+              // el set de abiertos. Reintenta el backfill si quedo pendiente.
+              await ref.read(consolesProvider.notifier).refreshNow();
+              await ref.read(unauthBackfillProvider.notifier).restart();
             },
             child: visible.isEmpty
                 ? ListView(
@@ -1083,6 +1113,90 @@ class _UnauthorisedTab extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Banner de progreso del backfill puntual (en vez del spinner infinito que
+/// tenia la vista live al paginar ventanas largas). Muestra avance y permite
+/// cancelar; la lista de abajo ya muestra lo que el poller tenga mientras tanto.
+class _BackfillBanner extends ConsumerWidget {
+  const _BackfillBanner({required this.state, required this.l});
+
+  final UnauthBackfillState state;
+  final L10n l;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                l.t(
+                    'Cargando historial sin ID… ${state.scanned} despachos '
+                        'revisados (${state.pages} págs)',
+                    'Loading no-ID history… ${state.scanned} dispenses '
+                        'scanned (${state.pages} pages)'),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            TextButton(
+              onPressed: () =>
+                  ref.read(unauthBackfillProvider.notifier).cancel(),
+              child: Text(l.t('Cancelar', 'Cancel')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Aviso compacto si el backfill fallo, con reintento. No bloquea la lista
+/// (el set incremental sigue mostrandose).
+class _BackfillError extends ConsumerWidget {
+  const _BackfillError({required this.message, required this.l});
+
+  final String message;
+  final L10n l;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Material(
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded,
+                size: 18, color: Theme.of(context).colorScheme.onErrorContainer),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                l.t('No se pudo cargar el historial sin ID.',
+                    'Could not load the no-ID history.'),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onErrorContainer),
+              ),
+            ),
+            TextButton(
+              onPressed: () =>
+                  ref.read(unauthBackfillProvider.notifier).restart(),
+              child: Text(l.t('Reintentar', 'Retry')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

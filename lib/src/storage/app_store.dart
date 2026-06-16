@@ -59,6 +59,7 @@ class AppStore {
   static const _kCacheEquipmentField = 'cache.equipmentField';
   static const _kCacheSflLimits = 'cache.sflLimits';
   static const _kCacheSflFetchedAt = 'cache.sflLimitsFetchedAt';
+  static const _kCacheUnauthBackfillSite = 'cache.unauthBackfillSite';
 
   static const _kConditions = 'state.conditions';
   static const _kSnapshot = 'state.snapshot';
@@ -138,6 +139,9 @@ class AppStore {
     await _prefs.remove(_kCacheEquipmentField);
     await _prefs.remove(_kCacheSflLimits);
     await _prefs.remove(_kCacheSflFetchedAt);
+    // Cambio de sitio: el historial "Sin ID" sembrado ya no aplica; al volver a
+    // la pestaña se re-siembra contra el nuevo sitio.
+    await _prefs.remove(_kCacheUnauthBackfillSite);
   }
 
   // -- caches de API --------------------------------------------------------------
@@ -296,6 +300,34 @@ class AppStore {
       encoded[e.key] = e.value.toJson();
     }
     await _prefs.setString(_kUnauthorisedOpen, jsonEncode(encoded));
+  }
+
+  /// Funde en el set de ABIERTOS los "sin ID" hallados por el backfill puntual:
+  /// preserva tal cual los que el poller ya conocia y sella los nuevos con
+  /// [now] como `firstSeen` (asi la poda por retencion no los descarta de
+  /// inmediato). Relee del disco antes de fundir para no pisar lo que el poller
+  /// haya escrito mientras corria el backfill.
+  Future<void> mergeUnauthorisedOpen(
+    Iterable<UnauthorisedTxn> found, {
+    required DateTime now,
+  }) async {
+    await _prefs.reload();
+    final open = loadUnauthorisedOpen();
+    for (final t in found) {
+      open[t.id] ??= t.copyWith(firstSeen: t.firstSeen ?? now);
+    }
+    await saveUnauthorisedOpen(open, now: now);
+  }
+
+  /// Sitio (id) cuyo historial "Sin ID" ya se sembro con el backfill puntual.
+  /// `null` = aun no se ha hecho (o se cambio de sitio: [clearApiCaches] lo
+  /// borra). Evita repetir la pasada larga en cada apertura de la pestaña.
+  String? get unauthBackfilledSite =>
+      _prefs.getString(_kCacheUnauthBackfillSite);
+
+  Future<void> saveUnauthBackfilledSite(String? siteId) async {
+    if (siteId == null || siteId.isEmpty) return;
+    await _prefs.setString(_kCacheUnauthBackfillSite, siteId);
   }
 
   // -- estado de entregas (auditoria de deliveries) -----------------------------------

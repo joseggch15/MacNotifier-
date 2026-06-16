@@ -257,10 +257,32 @@ extension UnauthPeriodX on UnauthPeriod {
   }
 }
 
+/// Filtra el conjunto de ABIERTOS (todos ya sin-ID en lanes vigilados, tal
+/// como los mantiene el poller incremental) a la ventana [start, end) por
+/// `collectedAt`. Es lo que usa el selector de periodo de la pestaña "Sin ID":
+/// un filtro LOCAL sobre el set ya en memoria, sin re-descargar la ventana de
+/// la API. Misma semantica de ventana que [detectUnassignedUnauthorised]
+/// (start nulo = "Todos", incluye lo viejo y lo sin fecha).
+List<UnauthorisedTxn> openInWindow(
+  Iterable<UnauthorisedTxn> open, {
+  DateTime? start,
+  DateTime? end,
+}) {
+  final out = <UnauthorisedTxn>[];
+  for (final t in open) {
+    final at = t.collectedAt;
+    if (start != null && (at == null || at.isBefore(start))) continue;
+    if (end != null && at != null && at.isAfter(end)) continue;
+    out.add(t);
+  }
+  return sortedOpen(out);
+}
+
 /// Filtra una tanda de despachos a los no-autorizados SIN ID en los lanes
 /// vigilados y dentro de la ventana [start, end] (por `recordCollectedAt`).
-/// Es la version "live" (no incremental) que alimenta la pestaña: ve TODO lo
-/// que sigue sin asignar en la ventana, sin depender del watermark del poller.
+/// Alimenta el BACKFILL puntual (siembra el set de abiertos la primera vez); el
+/// poller incremental lo mantiene despues. Ve TODO lo que sigue sin asignar en
+/// la ventana, sin depender del watermark del poller.
 List<UnauthorisedTxn> detectUnassignedUnauthorised({
   required List<Dispense> dispenses,
   required Set<String> normalizedLanes,

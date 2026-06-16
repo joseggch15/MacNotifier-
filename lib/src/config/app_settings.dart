@@ -32,7 +32,19 @@ const kDefaultUnauthorisedLanes = <String>[
 
 /// Cuanto se conserva un despacho UNAUTHORISED "abierto" (sin ID) en el estado
 /// local antes de podarlo si nunca llega a asignarsele un equipo.
-const kUnauthorisedKeepDays = 30;
+///
+/// La pestaña "Sin ID" se sirve de este conjunto incremental (no re-descarga la
+/// ventana de la API en cada periodo), asi que la retencion define la
+/// profundidad maxima visible: 1 año cubre el periodo "Anual" y "Todos". El
+/// conjunto de abiertos es chico (son excepciones, no el trafico normal), asi
+/// que conservar un año en local es barato.
+const kUnauthorisedKeepDays = 365;
+
+/// Ventana hacia atras del BACKFILL puntual de "Sin ID": la primera vez (o tras
+/// cambiar de sitio) se hace UNA sola pasada paginada para sembrar los
+/// despachos no autorizados sin ID que quedaron abiertos antes de instalar la
+/// app; despues el poller incremental los mantiene. Acotada e interrumpible.
+const kUnauthorisedBackfillWindow = Duration(days: kUnauthorisedKeepDays);
 
 // --- Auditoria de entregas (port de DELIVERY_* en msgq/config.py) -----------
 /// Desviacion relativa minima (%) medidor-vs-guia para marcar una entrega.

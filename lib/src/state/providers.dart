@@ -103,49 +103,143 @@ class ConsolesController extends AsyncNotifier<HealthCheckResult> {
 }
 
 /// Segmento temporal seleccionado en la pestaña "Sin ID". Por defecto semanal:
-/// suficiente para no perder lo reciente sin descargar el historial entero.
+/// suficiente para no perder lo reciente. AHORA es solo un filtro LOCAL sobre el
+/// conjunto de abiertos que el poller ya mantiene (ver [HealthCheckResult.
+/// unauthorised]); cambiar de periodo ya NO dispara descargas — es instantaneo.
 final unauthPeriodProvider =
     StateProvider<UnauthPeriod>((_) => UnauthPeriod.weekly);
 
-/// Vista EN VIVO de despachos no autorizados sin ID, consultada por el segmento
-/// [unauthPeriodProvider] (no incremental). A diferencia del poller —que solo
-/// detecta TRANSICIONES nuevas para notificar— esto consulta toda la ventana y
-/// filtra client-side, asi muestra TODO lo que sigue sin asignar (incluido lo
-/// anterior al watermark del poller). Mismo patron que la pantalla de Reportes.
+/// Progreso del BACKFILL puntual de "Sin ID".
 ///
-/// `autoDispose` + `keepAlive` tras la primera carga: la consulta (que puede ser
-/// pesada en ventanas largas) se dispara solo cuando se abre la pestaña y luego
-/// se cachea hasta que cambie el segmento o se refresque a mano.
-final unauthorisedViewProvider =
-    FutureProvider.autoDispose<List<UnauthorisedTxn>>((ref) async {
-  final settings = ref.watch(settingsProvider);
-  final period = ref.watch(unauthPeriodProvider);
-  if (!settings.isConfigured || !settings.monitorUnauthorised) {
-    return const <UnauthorisedTxn>[];
+/// La pestaña se sirve del set de abiertos incremental (instantaneo), pero ese
+/// set solo cubre lo que el poller ha visto desde que arranco. Este backfill
+/// hace UNA pasada paginada y acotada ([kUnauthorisedBackfillWindow]) la primera
+/// vez por sitio para sembrar los "sin ID" abiertos previos; despues el poller
+/// los mantiene. Es interrumpible y reporta progreso (en vez del spinner
+/// infinito que tenia la vista live al paginar ventanas largas).
+class UnauthBackfillState {
+  const UnauthBackfillState({
+    this.running = false,
+    this.pages = 0,
+    this.scanned = 0,
+    this.found = 0,
+    this.error,
+  });
+
+  /// Backfill en curso.
+  final bool running;
+
+  /// Paginas ya traidas (progreso visible).
+  final int pages;
+
+  /// Despachos revisados hasta ahora.
+  final int scanned;
+
+  /// "Sin ID" abiertos sembrados al terminar.
+  final int found;
+
+  /// Mensaje del ultimo fallo (null = sin error).
+  final String? error;
+
+  UnauthBackfillState copyWith({
+    bool? running,
+    int? pages,
+    int? scanned,
+    int? found,
+    String? error,
+  }) =>
+      UnauthBackfillState(
+        running: running ?? this.running,
+        pages: pages ?? this.pages,
+        scanned: scanned ?? this.scanned,
+        found: found ?? this.found,
+        error: error,
+      );
+}
+
+final unauthBackfillProvider =
+    NotifierProvider<UnauthBackfillController, UnauthBackfillState>(
+        UnauthBackfillController.new);
+
+class UnauthBackfillController extends Notifier<UnauthBackfillState> {
+  bool _cancelled = false;
+
+  /// Si ya se intento el arranque automatico, y para que sitio (asi se
+  /// re-siembra al cambiar de sitio pero no se reintenta en cada rebuild).
+  bool _attempted = false;
+  String? _attemptedSite;
+
+  @override
+  UnauthBackfillState build() => const UnauthBackfillState();
+
+  /// Disparo AUTOMATICO (al abrir la pestaña): arranca a lo sumo una vez por
+  /// sitio observado. Idempotente — la pestaña puede llamarlo en cada
+  /// construccion. Respeta la cancelacion (no auto-reintenta el mismo sitio),
+  /// pero vuelve a sembrar si cambia el sitio.
+  Future<void> ensureStarted() async {
+    final store = ref.read(appStoreProvider);
+    final settings = ref.read(settingsProvider);
+    final knownSite = store.cachedSiteId ?? settings.siteId;
+    if (_attempted && _attemptedSite == knownSite) return;
+    _attempted = true;
+    _attemptedSite = knownSite;
+    await _run();
   }
-  final link = ref.keepAlive();
-  final store = ref.read(appStoreProvider);
-  final client = AdaptIQClient(
-    settings,
-    siteId: store.cachedSiteId,
-    knownOptionalFields: store.cachedAdaptMacFields,
-    equipmentField: store.cachedEquipmentField,
-  );
-  try {
-    final range = period.range(DateTime.now());
-    final dispenses = await client.fetchDispenses(updatedFrom: range.start);
-    // Persiste el site id por si se autodescubrio en esta consulta.
-    await store.saveCachedSiteId(client.siteId);
-    return detectUnassignedUnauthorised(
-      dispenses: dispenses,
-      normalizedLanes: settings.normalizedUnauthorisedLanes,
-      start: range.start,
-      end: range.end,
+
+  /// Disparo EXPLICITO (pull-to-refresh / reintentar): vuelve a intentar aunque
+  /// antes se cancelara o fallara. No-op si ya esta sembrado o corriendo.
+  Future<void> restart() => _run();
+
+  Future<void> _run() async {
+    if (state.running) return;
+    final settings = ref.read(settingsProvider);
+    if (!settings.isConfigured || !settings.monitorUnauthorised) return;
+    final store = ref.read(appStoreProvider);
+    final knownSite = store.cachedSiteId ?? settings.siteId;
+    // Ya sembrado para este sitio: nada que hacer (el poller lo mantiene).
+    if (knownSite.isNotEmpty && store.unauthBackfilledSite == knownSite) return;
+
+    _cancelled = false;
+    state = const UnauthBackfillState(running: true);
+    final client = AdaptIQClient(
+      settings,
+      siteId: store.cachedSiteId,
+      knownOptionalFields: store.cachedAdaptMacFields,
+      equipmentField: store.cachedEquipmentField,
     );
-  } on Object {
-    link.close(); // un fallo no se cachea: el proximo intento vuelve a pedir
-    rethrow;
-  } finally {
-    client.close();
+    try {
+      final now = DateTime.now().toUtc();
+      final dispenses = await client.fetchDispensesProgressive(
+        updatedFrom: now.subtract(kUnauthorisedBackfillWindow),
+        isCancelled: () => _cancelled,
+        onPage: (pages, scanned) =>
+            state = state.copyWith(pages: pages, scanned: scanned),
+      );
+      if (_cancelled) {
+        // Cancelado: no se marca el sitio como sembrado (restart() lo reintenta).
+        state = const UnauthBackfillState();
+        return;
+      }
+      // Todos los sin-ID del lote (ya acotado por la ventana del backfill); la
+      // retencion y el filtro de periodo de la UI los acotan al mostrarlos.
+      final found = detectUnassignedUnauthorised(
+        dispenses: dispenses,
+        normalizedLanes: settings.normalizedUnauthorisedLanes,
+      );
+      await store.mergeUnauthorisedOpen(found, now: now);
+      await store.saveCachedSiteId(client.siteId);
+      await store.saveUnauthBackfilledSite(client.siteId ?? knownSite);
+      state = state.copyWith(running: false, found: found.length);
+      // Republica el set recien sembrado en la UI (el poll incremental relee
+      // el set fundido y lo expone en HealthCheckResult.unauthorised).
+      await ref.read(consolesProvider.notifier).refreshNow();
+    } on Object catch (e) {
+      state = UnauthBackfillState(error: e.toString());
+    } finally {
+      client.close();
+    }
   }
-});
+
+  /// Corta la pasada en curso (el usuario salio o pulso cancelar).
+  void cancel() => _cancelled = true;
+}
