@@ -18,6 +18,7 @@ import '../analytics/grouping.dart';
 import '../analytics/tank_analytics.dart';
 import '../domain/fms_vocabulary.dart';
 import '../state/msgq_providers.dart';
+import 'msgq_charts.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -133,17 +134,10 @@ class _ConsumptionTab extends ConsumerWidget {
         MsgqSection(
           title: 'Consumo en el tiempo',
           subtitle: '${period.label} · volumen despachado por periodo',
-          child: MsgqBarList(
-            bars: series.reversed
-                .map((p) => MsgqBar(
-                      label: period == AnalyticsPeriod.monthly
-                          ? formatMonth(p.period)
-                          : formatDay(p.period),
-                      value: p.volumeL,
-                      caption: '${formatCount(p.dispenses)} despachos',
-                    ))
+          child: MsgqPeriodBarChart(
+            points: series
+                .map((p) => MsgqPoint(p.period, p.volumeL))
                 .toList(),
-            maxItems: 14,
           ),
         ),
         MsgqSection(
@@ -230,18 +224,8 @@ class _FlowTab extends ConsumerWidget {
         MsgqSection(
           title: 'Neto por periodo',
           subtitle: '${period.label} · entregas menos despachos y transferencias',
-          child: MsgqBarList(
-            bars: series.reversed
-                .map((p) => MsgqBar(
-                      label: period == AnalyticsPeriod.monthly
-                          ? formatMonth(p.period)
-                          : formatDay(p.period),
-                      value: p.netL,
-                      caption: 'in ${formatLitres(p.inflowL)} · '
-                          'out ${formatLitres(p.outflowL)}',
-                    ))
-                .toList(),
-            maxItems: 14,
+          child: MsgqPeriodBarChart(
+            points: series.map((p) => MsgqPoint(p.period, p.netL)).toList(),
           ),
         ),
         MsgqSection(
@@ -307,6 +291,8 @@ class _ReconciliationTab extends StatelessWidget {
       );
     }
 
+    final stock = analytics.stockSeries();
+
     return ListView(
       children: [
         MsgqKpiRow(cards: [
@@ -326,6 +312,26 @@ class _ReconciliationTab extends StatelessWidget {
             hint: formatLitres(kpis.worstErrorL),
           ),
         ]),
+        MsgqSection(
+          title: 'Nivel de stock',
+          subtitle: 'Cierre medido por el sensor, dia a dia',
+          child: MsgqTimeSeriesChart(
+            series: [
+              for (final entry in stock.seriesByTank.entries)
+                MsgqSeries(
+                  label: entry.key,
+                  // Un dia sin medicion se OMITE del trazo en vez de dibujarse
+                  // como cero: un tanque sin lectura no es un tanque vacio.
+                  points: [
+                    for (var i = 0; i < stock.periods.length; i++)
+                      if (entry.value[i] != null)
+                        MsgqPoint(stock.periods[i], entry.value[i]!),
+                  ],
+                ),
+            ],
+            emptyMessage: 'Sin lecturas de stock en el rango.',
+          ),
+        ),
         MsgqSection(
           title: 'Descuadre por tanque',
           subtitle: 'Stock medido por el sensor menos movimiento registrado',

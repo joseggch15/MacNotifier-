@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../analytics/burn_rate.dart';
 import '../state/msgq_providers.dart';
+import 'msgq_charts.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -207,6 +208,7 @@ class _EquipmentTab extends StatelessWidget {
             hint: '${formatCount(kpis.atypicalIntervals)} atipicos',
           ),
         ]),
+        _focusChart(context),
         MsgqSection(
           title: 'Equipos anomalos',
           subtitle: 'Alto = sobre-consumo (fuga, robo, falla). '
@@ -228,6 +230,43 @@ class _EquipmentTab extends StatelessWidget {
         ),
         const SizedBox(height: 24),
       ],
+    );
+  }
+
+  /// Serie del equipo con MAS desviacion, contra la linea base de su categoria.
+  ///
+  /// Se elige el peor caso a proposito: es el que el auditor abriria primero, y
+  /// verlo contra la banda de sus pares es lo que convierte un numero en un
+  /// hallazgo.
+  Widget _focusChart(BuildContext context) {
+    final focus = audit.equipmentAnomalies.firstOrNull ??
+        (audit.equipment.where((e) => e.isReliable).firstOrNull);
+    if (focus == null) return const SizedBox.shrink();
+    final points = audit
+        .equipmentSeries(focus.equipmentId, product: audit.product)
+        .where((s) => s.date != null)
+        .map((s) => MsgqPoint(s.date!, s.burnRate))
+        .toList();
+    if (points.length < 2) return const SizedBox.shrink();
+
+    final category = audit.categories
+        .where((c) => c.category == focus.category)
+        .firstOrNull;
+
+    return MsgqSection(
+      title: 'Serie de ${focus.equipmentId}',
+      subtitle: '${focus.category} · ${points.length} intervalos',
+      child: MsgqTimeSeriesChart(
+        series: [MsgqSeries(label: focus.equipmentId, points: points)],
+        band: category == null
+            ? null
+            : MsgqReferenceBand(
+                value: category.baseline,
+                spread: category.dispersion,
+                label: 'Base ${category.category}',
+              ),
+        valueFormatter: (v) => '${v.toStringAsFixed(1)} L/h',
+      ),
     );
   }
 

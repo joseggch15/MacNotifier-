@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../analytics/hardware_health.dart';
 import '../state/msgq_providers.dart';
+import 'msgq_charts.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -247,8 +248,31 @@ class _MetersTab extends StatelessWidget {
             'la ventana reciente para comparar su caudal.',
       );
     }
+    // Serie por manguera: la degradacion se ve como pendiente, no como un
+    // porcentaje suelto. Se limita a las mangueras evaluadas (las que tienen
+    // muestras a ambos lados), que son de las que se puede afirmar algo.
+    final evaluated = audit.meters.map((m) => m.meterId).toSet();
+    final byMeter = <String, List<MsgqPoint>>{};
+    for (final p in audit.meterSeries) {
+      if (!evaluated.contains(p.meterId)) continue;
+      byMeter.putIfAbsent(p.meterId, () => <MsgqPoint>[])
+          .add(MsgqPoint(p.date, p.flow));
+    }
+
     return ListView(
       children: [
+        MsgqSection(
+          title: 'Caudal en el tiempo',
+          subtitle: '${audit.meters.first.metric} mediano por dia y manguera',
+          child: MsgqTimeSeriesChart(
+            series: [
+              for (final e in byMeter.entries)
+                MsgqSeries(label: e.key, points: e.value),
+            ],
+            valueFormatter: (v) => '${v.toStringAsFixed(1)} L/min',
+            emptyMessage: 'Sin lecturas de caudal en el rango.',
+          ),
+        ),
         MsgqSection(
           title: 'Caudal por manguera',
           subtitle: '${audit.meters.first.metric} reciente contra su linea base',

@@ -61,6 +61,11 @@ dependencies:
   sqflite: ^2.3.3
   sqflite_common_ffi: ^2.3.3
   path: ^1.9.0
+  # Graficas de series temporales de los modulos MSGQ. PINNED a la serie 0.70:
+  # fl_chart 1.x usa `Matrix4.translateByDouble`, que llega con Flutter 3.32, y
+  # este proyecto compila con 3.29 (igual que workmanager, arriba). `flutter
+  # analyze` NO lo detecta —no analiza dependencias—; solo falla al compilar.
+  fl_chart: ^0.70.2
 
 dev_dependencies:
   flutter_test:
