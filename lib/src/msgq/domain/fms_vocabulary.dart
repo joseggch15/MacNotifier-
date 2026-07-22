@@ -297,6 +297,135 @@ const String alertRetag = 'Re-tagueo RFID sospechoso';
 const String alertMeterDegraded = 'Caudal de medidor degradado';
 
 // ===========================================================================
+// Auditoria de Actividad (equipos fantasma / coherencia actividad<->combustible)
+// ===========================================================================
+
+/// Dias sin despachar tras los cuales un equipo 'In Service' se considera
+/// fantasma: figura operativo pero no consume, y distorsiona los KPIs de
+/// disponibilidad.
+const int idleAssetDays = 15;
+const int idleAssetDaysCritical = 30;
+
+/// 'Trabaja sin repostar': si el faltante (consumo esperado menos todo lo
+/// registrado en la ventana) supera `SFL * factor`, el equipo no pudo operar
+/// asi con un solo tanque — recibio combustible por fuera del FMS.
+const double activityUnfueledSflFactor = 1.2;
+
+/// Las ventanas mas largas se descartan: alli el burn rate tipico por miles de
+/// horas amplifica el error, y las brechas de cobertura de SMU del endpoint
+/// generarian falsos positivos sistematicos.
+const double activityUnfueledMaxGapDays = 60.0;
+
+/// 'Repostado sin operar': despachos consecutivos cuyo SMU no avanza (el
+/// epsilon tolera ruido de lectura). Se reporta una racha con >= N despachos
+/// abarcando >= D dias.
+const double activityFrozenSmuEpsilon = 0.5;
+const int activityFrozenMinDispenses = 3;
+const double activityFrozenMinDays = 7.0;
+
+/// Avance fisicamente plausible del SMU por HORA de pared transcurrida.
+///
+/// Filtra lecturas corruptas ANTES de estimar consumo: un horometro avanza a lo
+/// sumo ~1 h por hora (con margen por desfase de reloj); un odometro, a lo sumo
+/// ~120 km/h sostenidos. Lo que excede esto es un sensor dañado —dominio de la
+/// auditoria de hardware—, no actividad real. Sin este filtro, un salto de
+/// cientos de miles de horas inventa millones de litros fantasma.
+const double activityMaxSmuPerHourHours = 1.25;
+const double activityMaxSmuPerHourKm = 120.0;
+
+const String alertIdleAsset = 'Equipo fantasma (In Service sin despachos)';
+const String alertUnfueledActivity =
+    'Combustible no registrado (trabaja sin repostar)';
+const String alertFuelingIdle = 'Despachos sin operacion (SMU congelado)';
+
+// ===========================================================================
+// Auditoria de coherencia Producto <-> Equipo (posible tag clonado)
+// ===========================================================================
+// Un equipo solo deberia recibir los productos que tiene habilitados. Que se le
+// despache uno AJENO —p. ej. Coolant a un equipo solo-DIESEL— suele indicar un
+// tag RFID clonado o un equipo mal configurado en el maestro.
+//
+// El reto es temporal: un producto pudo estar habilitado y luego deshabilitarse,
+// dejando despachos LEGITIMOS en el historico. La API no expone cuando se
+// habilito cada uno, asi que un producto se considera legitimo si tiene HUELLA
+// REAL en el propio historial del equipo.
+
+/// Umbrales de "establecido por uso": basta cumplir cualquiera.
+const int productMismatchMinEvents = 3;
+const int productMismatchMinDays = 14;
+const double productMismatchMinShare = 0.15;
+
+const String alertProductForeign =
+    'Producto ajeno al equipo (posible tag clonado)';
+const String alertProductOffMaster = 'Producto fuera del maestro del equipo';
+
+/// Clase de producto: distingue combustible de fluido de servicio, para poder
+/// escalar los cruces ENTRE clases (que es la señal fuerte de tag clonado).
+enum ProductClass {
+  fuel('FUEL'),
+  fluid('FLUID'),
+  other('OTHER');
+
+  const ProductClass(this.label);
+
+  final String label;
+}
+
+/// Clasificacion por substring en la etiqueta del producto.
+///
+/// FUEL se evalua ANTES que FLUID a proposito: un combustible como 'Gas Oil'
+/// contiene la subcadena 'OIL' (keyword de FLUID) y se clasificaria mal si el
+/// orden se invirtiera.
+const List<String> _fuelKeywords = [
+  'DIESEL', 'GASOIL', 'GAS OIL', 'UNLEADED', 'GASOLINE', 'PETROL',
+  'ULP', 'LFO', 'FUEL',
+];
+
+const List<String> _fluidKeywords = [
+  'COOLANT', 'HYDRAUL', 'HIDRA', 'OIL', 'LUBRIC', 'GREASE', 'GRASA',
+  'ADBLUE', 'DEF', 'GLYCOL', 'GLICOL', 'ANTIFREEZE', 'ANTICONG',
+  'REFRIG', 'ATF', '15W', '10W', '5W', '80W', '85W',
+];
+
+/// Clase de un producto por su etiqueta.
+ProductClass productClass(String? label) {
+  final up = label?.trim().toUpperCase();
+  if (up == null || up.isEmpty) return ProductClass.other;
+  if (_fuelKeywords.any(up.contains)) return ProductClass.fuel;
+  if (_fluidKeywords.any(up.contains)) return ProductClass.fluid;
+  return ProductClass.other;
+}
+
+// ===========================================================================
+// Safe Fill Level de respaldo
+// ===========================================================================
+
+/// SFL de RESPALDO por categoria, para los equipos sin limite cargado en el FMS.
+///
+/// La fuente primaria es SIEMPRE el limite real por (equipo, producto) que se
+/// replica de la API; esto solo cubre los huecos. Se cruza por PALABRA CLAVE
+/// contra la categoria del equipo, sin distinguir caja, y gana la primera
+/// coincidencia. Litros, ajustables por el auditor.
+const List<(String, double)> sflFallbackByCategory = [
+  ('LIGHT VEHICLE', 80.0),
+  ('LIGHT TRUCK', 150.0),
+  ('EXCAVATOR', 7450.0),
+];
+
+/// De donde salio el SFL de un equipo. Importa mostrarlo: un hallazgo apoyado
+/// en un limite REAL del FMS pesa mas que uno apoyado en un respaldo por
+/// categoria.
+enum SflSource {
+  limit('Limite del FMS'),
+  fallback('Respaldo por categoria'),
+  none('Sin dato');
+
+  const SflSource(this.label);
+
+  final String label;
+}
+
+// ===========================================================================
 // Auditoria de Tag Hopping ("el tag en el bolsillo")
 // ===========================================================================
 // El tag RFID identifica al equipo: cada despacho queda imputado al equipo cuyo

@@ -13,6 +13,7 @@ import '../../i18n/l10n.dart';
 import '../../state/providers.dart';
 import '../data/replica_database.dart';
 import '../state/msgq_providers.dart';
+import 'activity_screen.dart';
 import 'burn_rate_screen.dart';
 import 'equipment_screen.dart';
 import 'hardware_screen.dart';
@@ -119,6 +120,17 @@ class MsgqHomeScreen extends ConsumerWidget {
                   onTap: () => _open(context, const RfidScreen()),
                 ),
                 _ModuleTile(
+                  icon: Icons.visibility_off_outlined,
+                  title: l.t('Actividad y producto', 'Activity & product'),
+                  subtitle: l.t(
+                    'Equipos fantasma, combustible no registrado, despachos '
+                        'sin operacion y producto ajeno al equipo',
+                    'Ghost assets, unregistered fuel, dispenses without '
+                        'operation and foreign product',
+                  ),
+                  onTap: () => _open(context, const ActivityScreen()),
+                ),
+                _ModuleTile(
                   icon: Icons.gpp_bad_outlined,
                   title: l.t('Tag hopping', 'Tag hopping'),
                   subtitle: l.t(
@@ -191,6 +203,7 @@ class _ReplicaPanel extends StatelessWidget {
       ReplicaTable.changeEvents: 'Eventos de auditoria',
       ReplicaTable.consumptionLimits: 'Limites SFL',
       ReplicaTable.rfidHistory: 'Asignaciones RFID observadas',
+      ReplicaTable.productHistory: 'Productos habilitados observados',
     };
     return MsgqSection(
       title: 'Replica local',

@@ -300,6 +300,87 @@ class ConsumptionLimit {
 String limitKey(String? equipmentId, String? product) =>
     '${equipmentId?.trim() ?? ''}|${product?.trim().toUpperCase() ?? ''}';
 
+/// Ventana observada en la que un producto estuvo HABILITADO en un equipo —
+/// port de `PRODUCT_HISTORY_COLS` / `transform.enabled_products_df`.
+///
+/// Analogo a [RfidAssignment], y por la misma razon: `consumptionTanks` es solo
+/// el estado ACTUAL, y la API no dice cuando se habilito o deshabilito cada
+/// producto. Sin esta ventana, un despacho legitimo de un producto que hoy ya
+/// no esta habilitado se leeria como "producto ajeno al equipo" — es decir,
+/// como un tag clonado.
+///
+/// Los pares que dejan de estar vigentes NO se reinsertan: su `lastSeen` queda
+/// congelado, y eso marca el fin de la ventana de habilitacion.
+class ProductAssignment {
+  const ProductAssignment({
+    required this.key,
+    this.equipmentId,
+    this.product,
+    this.productCode,
+    this.internalId,
+    this.firstSeen,
+    this.lastSeen,
+  });
+
+  /// `equipmentId|PRODUCTO_MAYUS`.
+  final String key;
+
+  final String? equipmentId;
+  final String? product;
+  final String? productCode;
+  final String? internalId;
+  final DateTime? firstSeen;
+  final DateTime? lastSeen;
+
+  /// Aplana los limites vigentes a una fila por (equipo, producto).
+  static List<ProductAssignment> fromLimits(
+    Iterable<ConsumptionLimit> limits, {
+    required DateTime seenAt,
+    Map<String, DateTime> knownFirstSeen = const {},
+  }) {
+    final out = <ProductAssignment>[];
+    final seen = <String>{};
+    for (final l in limits) {
+      final id = asText(l.equipmentId);
+      final product = asText(l.product);
+      if (id == null || product == null) continue;
+      final key = '$id|${product.toUpperCase()}';
+      if (!seen.add(key)) continue;
+      out.add(ProductAssignment(
+        key: key,
+        equipmentId: id,
+        product: product,
+        productCode: l.productCode,
+        internalId: l.internalId,
+        firstSeen: knownFirstSeen[key] ?? seenAt,
+        lastSeen: seenAt,
+      ));
+    }
+    return out;
+  }
+
+  factory ProductAssignment.fromJson(Map<String, dynamic> json) =>
+      ProductAssignment(
+        key: (json['key'] ?? '').toString(),
+        equipmentId: asText(json['equipment_id']),
+        product: asText(json['product']),
+        productCode: asText(json['product_code']),
+        internalId: asText(json['internal_id']),
+        firstSeen: asDate(json['first_seen']),
+        lastSeen: asDate(json['last_seen']),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'key': key,
+        'equipment_id': equipmentId,
+        'product': product,
+        'product_code': productCode,
+        'internal_id': internalId,
+        'first_seen': isoOrNull(firstSeen),
+        'last_seen': isoOrNull(lastSeen),
+      };
+}
+
 /// Asignacion observada de un tag RFID a un equipo — port de
 /// `RFID_HISTORY_COLS` / `transform.rfid_assignments_df`.
 ///

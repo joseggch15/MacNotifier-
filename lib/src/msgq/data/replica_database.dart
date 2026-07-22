@@ -45,6 +45,7 @@ class ReplicaTable {
   static const changeEvents = 'change_events';
   static const consumptionLimits = 'consumption_limits';
   static const rfidHistory = 'rfid_history';
+  static const productHistory = 'product_history';
 
   static const all = [
     movements,
@@ -54,6 +55,7 @@ class ReplicaTable {
     changeEvents,
     consumptionLimits,
     rfidHistory,
+    productHistory,
   ];
 }
 
@@ -74,7 +76,10 @@ class ReplicaDatabase {
 
   /// v2 añadio `rfid_history` (el historial observado de tag -> equipo, sin el
   /// cual las REMOCIONES de tag no se pueden atribuir a ningun equipo).
-  static const _schemaVersion = 2;
+  /// v3 anadio `product_history` (la ventana observada de habilitacion de cada
+  /// producto, sin la cual un despacho legitimo de un producto ya deshabilitado
+  /// se leeria como tag clonado).
+  static const _schemaVersion = 3;
   static const _defaultFileName = 'msgq_replica.sqlite3';
 
   /// Abre (y crea si hace falta) la replica.
@@ -194,6 +199,7 @@ class ReplicaDatabase {
       )''');
 
     _createRfidHistory(batch);
+    _createProductHistory(batch);
 
     // Watermark por entidad: el `updatedAt` mas alto ya replicado.
     batch.execute('''
@@ -218,12 +224,29 @@ class ReplicaDatabase {
         'CREATE INDEX idx_rfid_history_equipment ON rfid_history("equipment_id")');
   }
 
+  /// Ventana OBSERVADA de habilitacion de cada producto por equipo.
+  ///
+  /// `consumptionTanks` es solo el estado actual: sin esta tabla, un despacho
+  /// legitimo de un producto que hoy ya no esta habilitado se marcaria como
+  /// producto ajeno al equipo.
+  static void _createProductHistory(Batch batch) {
+    batch.execute('''
+      CREATE TABLE product_history (
+        "key" TEXT PRIMARY KEY, "equipment_id" TEXT, "product" TEXT,
+        "product_code" TEXT, "internal_id" TEXT,
+        "first_seen" TEXT, "last_seen" TEXT
+      )''');
+    batch.execute('CREATE INDEX idx_product_history_equipment '
+        'ON product_history("equipment_id")');
+  }
+
+  /// Migracion acumulativa: cada version aplica SOLO lo suyo, asi una replica
+  /// en v1 llega a v3 encadenando ambos pasos en una sola apertura.
   static Future<void> _upgradeSchema(Database db, int from, int to) async {
-    if (from < 2) {
-      final batch = db.batch();
-      _createRfidHistory(batch);
-      await batch.commit(noResult: true);
-    }
+    final batch = db.batch();
+    if (from < 2) _createRfidHistory(batch);
+    if (from < 3) _createProductHistory(batch);
+    await batch.commit(noResult: true);
   }
 
   // =========================================================================
@@ -301,6 +324,27 @@ class ReplicaDatabase {
       knownFirstSeen: known,
     );
     return upsertAll(ReplicaTable.rfidHistory, rows.map((a) => a.toJson()));
+  }
+
+  /// Registra los productos habilitados vigentes, preservando el `firstSeen`.
+  ///
+  /// Igual que [recordRfidAssignments], es upsert y nunca reemplazo: un
+  /// producto deshabilitado debe conservar su ventana, o los despachos que hizo
+  /// mientras estaba activo pasarian a leerse como ajenos.
+  Future<int> recordProductAssignments(
+    Iterable<ConsumptionLimit> limits, {
+    DateTime? seenAt,
+  }) async {
+    final known = {
+      for (final a in await productHistory())
+        if (a.firstSeen != null) a.key: a.firstSeen!,
+    };
+    final rows = ProductAssignment.fromLimits(
+      limits,
+      seenAt: seenAt ?? DateTime.now().toUtc(),
+      knownFirstSeen: known,
+    );
+    return upsertAll(ReplicaTable.productHistory, rows.map((a) => a.toJson()));
   }
 
   /// Reemplaza por completo una tabla de CATALOGO (tanques, equipos, limites).
@@ -448,6 +492,11 @@ class ReplicaDatabase {
   Future<List<RfidAssignment>> rfidHistory() async {
     final rows = await _db.query(ReplicaTable.rfidHistory);
     return rows.map(RfidAssignment.fromJson).toList(growable: false);
+  }
+
+  Future<List<ProductAssignment>> productHistory() async {
+    final rows = await _db.query(ReplicaTable.productHistory);
+    return rows.map(ProductAssignment.fromJson).toList(growable: false);
   }
 
   /// Filas por tabla (para el panel de diagnostico: "cuanto tengo replicado").

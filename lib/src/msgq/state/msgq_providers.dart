@@ -21,10 +21,12 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/providers.dart';
+import '../analytics/activity_audit.dart';
 import '../analytics/burn_rate.dart';
 import '../analytics/equipment_analytics.dart';
 import '../analytics/grouping.dart';
 import '../analytics/hardware_health.dart';
+import '../analytics/product_audit.dart';
 import '../analytics/rfid_inventory.dart';
 import '../analytics/tag_hopping.dart';
 import '../analytics/tank_analytics.dart';
@@ -113,6 +115,7 @@ class MsgqDatasetController extends AsyncNotifier<MsgqDataset> {
       changes: await replica.changeEvents(from: from),
       limits: await replica.consumptionLimits(),
       rfidHistory: await replica.rfidHistory(),
+      productHistory: await replica.productHistory(),
       loadedAt: DateTime.now().toUtc(),
       lastSyncedAt: await replica.lastSyncedAt(ReplicaTable.movements),
     );
@@ -289,6 +292,33 @@ final tagHoppingProvider = Provider<TagHopAudit?>((ref) {
   return TagHopAudit.run(
     movements: dataset.movements,
     equipment: dataset.equipment,
+  );
+});
+
+/// Umbral de dias sin despachar para considerar fantasma a un equipo.
+final idleDaysProvider = StateProvider<int>((_) => idleAssetDays);
+
+/// Auditoria de actividad (equipos fantasma, combustible no registrado, SMU
+/// congelado).
+final activityAuditProvider = Provider<ActivityAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  return ActivityAudit.run(
+    movements: dataset.movements,
+    equipment: dataset.equipment,
+    limits: dataset.limits,
+    idleDays: ref.watch(idleDaysProvider),
+  );
+});
+
+/// Auditoria de coherencia producto <-> equipo.
+final productAuditProvider = Provider<ProductAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  return ProductAudit.run(
+    movements: dataset.movements,
+    limits: dataset.limits,
+    productHistory: dataset.productHistory,
   );
 });
 

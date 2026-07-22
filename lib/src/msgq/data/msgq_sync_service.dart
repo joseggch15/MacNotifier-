@@ -185,6 +185,10 @@ class MsgqSyncService {
         if (master.limits.isNotEmpty) {
           await replica.replaceAll(ReplicaTable.consumptionLimits,
               master.limits.map((l) => l.toJson()));
+          // Observa la ventana de habilitacion vigente antes de que cambie: sin
+          // ella, los despachos de un producto ya deshabilitado se leerian como
+          // producto ajeno al equipo.
+          await replica.recordProductAssignments(master.limits);
           limits = master.limits.length;
         }
         await replica.setWatermark(
@@ -274,6 +278,7 @@ class MsgqDataset {
     required this.changes,
     this.limits = const [],
     this.rfidHistory = const [],
+    this.productHistory = const [],
     required this.loadedAt,
     this.lastSyncedAt,
   });
@@ -290,6 +295,9 @@ class MsgqDataset {
 
   /// Historial observado de tag -> equipo.
   final List<RfidAssignment> rfidHistory;
+
+  /// Ventanas observadas de habilitacion de producto por equipo.
+  final List<ProductAssignment> productHistory;
 
   /// Momento en que se leyo la replica.
   final DateTime loadedAt;
