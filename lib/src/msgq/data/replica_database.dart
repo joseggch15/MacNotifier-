@@ -30,8 +30,10 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../domain/change_event.dart';
+import '../../models/adapt_mac.dart';
 import '../domain/equipment.dart';
 import '../domain/fms_vocabulary.dart';
+import '../domain/mac_event.dart';
 import '../domain/movement.dart';
 import '../domain/node_parsing.dart';
 import '../domain/tank.dart';
@@ -46,6 +48,8 @@ class ReplicaTable {
   static const consumptionLimits = 'consumption_limits';
   static const rfidHistory = 'rfid_history';
   static const productHistory = 'product_history';
+  static const adaptMac = 'adaptmac';
+  static const adaptMacHistory = 'adaptmac_history';
 
   static const all = [
     movements,
@@ -56,6 +60,8 @@ class ReplicaTable {
     consumptionLimits,
     rfidHistory,
     productHistory,
+    adaptMac,
+    adaptMacHistory,
   ];
 }
 
@@ -79,7 +85,10 @@ class ReplicaDatabase {
   /// v3 anadio `product_history` (la ventana observada de habilitacion de cada
   /// producto, sin la cual un despacho legitimo de un producto ya deshabilitado
   /// se leeria como tag clonado).
-  static const _schemaVersion = 3;
+  /// v4 anadio `adaptmac` + `adaptmac_history`: el endpoint NO guarda historial
+  /// de consolas, asi que se construye observando el maestro y comparandolo
+  /// contra el snapshot anterior.
+  static const _schemaVersion = 4;
   static const _defaultFileName = 'msgq_replica.sqlite3';
 
   /// Abre (y crea si hace falta) la replica.
@@ -200,6 +209,7 @@ class ReplicaDatabase {
 
     _createRfidHistory(batch);
     _createProductHistory(batch);
+    _createMacTables(batch);
 
     // Watermark por entidad: el `updatedAt` mas alto ya replicado.
     batch.execute('''
@@ -240,12 +250,37 @@ class ReplicaDatabase {
         'ON product_history("equipment_id")');
   }
 
+  /// Maestro de consolas y su historial OBSERVADO de eventos.
+  ///
+  /// El maestro se guarda para poder DIFERENCIARLO contra el siguiente
+  /// snapshot: sin la foto anterior no hay forma de saber que una consola se
+  /// cayo, porque la API solo expone el estado actual.
+  static void _createMacTables(Batch batch) {
+    batch.execute('''
+      CREATE TABLE adaptmac (
+        "code" TEXT PRIMARY KEY, "description" TEXT, "site" TEXT,
+        "erp_reference" TEXT, "online" INTEGER, "key_bypass" INTEGER,
+        "last_successful_comms" TEXT, "last_failed_comms" TEXT,
+        "updated_at" TEXT
+      )''');
+    batch.execute('''
+      CREATE TABLE adaptmac_history (
+        "event_key" TEXT PRIMARY KEY, "code" TEXT, "description" TEXT,
+        "kind" TEXT, "ts" TEXT, "detail" TEXT,
+        "online" INTEGER, "key_bypass" INTEGER
+      )''');
+    batch.execute(
+        'CREATE INDEX idx_mac_history_code_ts ON adaptmac_history("code", "ts")');
+    batch.execute('CREATE INDEX idx_mac_history_kind ON adaptmac_history("kind")');
+  }
+
   /// Migracion acumulativa: cada version aplica SOLO lo suyo, asi una replica
-  /// en v1 llega a v3 encadenando ambos pasos en una sola apertura.
+  /// en v1 llega a la ultima encadenando todos los pasos en una sola apertura.
   static Future<void> _upgradeSchema(Database db, int from, int to) async {
     final batch = db.batch();
     if (from < 2) _createRfidHistory(batch);
     if (from < 3) _createProductHistory(batch);
+    if (from < 4) _createMacTables(batch);
     await batch.commit(noResult: true);
   }
 
@@ -494,6 +529,46 @@ class ReplicaDatabase {
     return rows.map(RfidAssignment.fromJson).toList(growable: false);
   }
 
+  /// Consolas del maestro replicado (el snapshot ANTERIOR, durante el sync).
+  Future<List<AdaptMac>> adaptMacs() async {
+    final rows = await _db.query(ReplicaTable.adaptMac);
+    return rows.map(macConsoleFromRow).toList(growable: false);
+  }
+
+  Future<List<MacEvent>> macHistory({DateTime? from}) async {
+    final rows = await _db.query(
+      ReplicaTable.adaptMacHistory,
+      where: from == null ? null : '"ts" >= ?',
+      whereArgs: from == null ? null : [from.toUtc().toIso8601String()],
+      orderBy: '"ts" DESC',
+    );
+    return rows.map(MacEvent.fromJson).toList(growable: false);
+  }
+
+  /// Diferencia el maestro nuevo contra el replicado, guarda los eventos y
+  /// reemplaza el snapshot.
+  ///
+  /// El ORDEN importa: primero se calculan los eventos contra la foto anterior
+  /// y solo despues se pisa el maestro. Al reves, cada sincronizacion compararia
+  /// el snapshot consigo mismo y no detectaria ni una sola caida.
+  Future<int> observeMacSnapshot(
+    List<AdaptMac> consoles, {
+    DateTime? observedAt,
+  }) async {
+    if (consoles.isEmpty) return 0;
+    final events = diffMacSnapshots(
+      previous: await adaptMacs(),
+      current: consoles,
+      observedAt: observedAt ?? DateTime.now().toUtc(),
+    );
+    if (events.isNotEmpty) {
+      await upsertAll(
+          ReplicaTable.adaptMacHistory, events.map((e) => e.toJson()));
+    }
+    await replaceAll(ReplicaTable.adaptMac, consoles.map(macConsoleToRow));
+    return events.length;
+  }
+
   Future<List<ProductAssignment>> productHistory() async {
     final rows = await _db.query(ReplicaTable.productHistory);
     return rows.map(ProductAssignment.fromJson).toList(growable: false);
@@ -530,6 +605,8 @@ class ReplicaDatabase {
       await txn.delete(ReplicaTable.changeEvents,
           where: '"changed_at" IS NOT NULL AND "changed_at" < ?',
           whereArgs: [iso]);
+      await txn.delete(ReplicaTable.adaptMacHistory,
+          where: '"ts" IS NOT NULL AND "ts" < ?', whereArgs: [iso]);
     });
     await _db.execute('VACUUM');
   }

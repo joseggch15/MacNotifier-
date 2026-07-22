@@ -19,10 +19,12 @@ import '../analytics/burn_rate.dart';
 import '../analytics/equipment_analytics.dart';
 import '../domain/equipment.dart';
 import '../analytics/hardware_health.dart';
+import '../analytics/mac_health.dart';
 import '../analytics/product_audit.dart';
 import '../analytics/rfid_inventory.dart';
 import '../analytics/tag_hopping.dart';
 import '../analytics/tank_analytics.dart';
+import '../analytics/volume_deviation.dart';
 import '../domain/fms_vocabulary.dart';
 import 'msgq_report.dart';
 
@@ -474,6 +476,124 @@ MsgqReport buildHardwareReport(
       ],
     );
 
+/// Reporte de salud de consolas.
+MsgqReport buildMacHealthReport(
+  MacHealthAudit audit, {
+  required String scope,
+}) =>
+    MsgqReport(
+      title: 'Salud de consolas',
+      subtitle: scope,
+      kpis: [
+        MsgqReportKpi('Consolas', _n(audit.kpis.consoles)),
+        MsgqReportKpi('Online ahora',
+            '${audit.kpis.onlineNow}/${audit.kpis.consoles}'),
+        MsgqReportKpi('Caidas', _n(audit.kpis.drops)),
+        MsgqReportKpi('Fallos de comms', _n(audit.kpis.commsFailures)),
+        MsgqReportKpi('Corte tipico',
+            '${audit.kpis.medianOutageMinutes.toStringAsFixed(0)} min',
+            hint: 'mediana'),
+        MsgqReportKpi('Mas inestable', audit.kpis.worstConsole ?? '—',
+            hint: '${audit.kpis.worstConsoleDrops} caidas'),
+      ],
+      sections: [
+        MsgqReportSection(
+          title: 'Fallas por dia',
+          chart: MsgqReportChart(
+            kind: MsgqChartKind.bars,
+            series: [
+              MsgqReportSeries(
+                label: 'Fallas',
+                points: audit.byDay.reversed
+                    .map((d) => MsgqReportPoint(_day(d.day), d.total.toDouble()))
+                    .toList(),
+              ),
+            ],
+          ),
+          table: MsgqReportTable(
+            headers: const [
+              'Fecha',
+              'Caidas',
+              'Comms',
+              'Bypass',
+              'Total',
+              'Falla principal',
+              'Consolas',
+            ],
+            rows: audit.byDay
+                .map((d) => [
+                      _day(d.day),
+                      _n(d.drops),
+                      _n(d.commsFailures),
+                      _n(d.bypassEvents),
+                      _n(d.total),
+                      d.mainFault.label,
+                      _n(d.consolesAffected),
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Por consola',
+          table: MsgqReportTable(
+            headers: const [
+              'Consola',
+              'Descripcion',
+              'Caidas',
+              'Comms',
+              'Bypass',
+              'Ultima caida',
+              'Online',
+            ],
+            rows: audit.byConsole
+                .map((c) => [
+                      c.code,
+                      c.description ?? '—',
+                      _n(c.drops),
+                      _n(c.commsFailures),
+                      _n(c.bypassEvents),
+                      _day(c.lastDrop),
+                      c.onlineNow == null
+                          ? '—'
+                          : (c.onlineNow! ? 'si' : 'NO'),
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Cortes de conexion',
+          table: MsgqReportTable(
+            headers: const [
+              'Consola',
+              'Caida',
+              'Recuperacion',
+              'Duracion (min)',
+              'En curso',
+            ],
+            rows: audit.outages
+                .map((o) => [
+                      o.code,
+                      _day(o.droppedAt),
+                      _day(o.recoveredAt),
+                      o.durationMinutes == null
+                          ? '—'
+                          : o.durationMinutes!.toStringAsFixed(1),
+                      o.ongoing ? 'SI' : 'no',
+                    ])
+                .toList(),
+          ),
+        ),
+      ],
+      footnotes: const [
+        'El endpoint no guarda historial de consolas: estos eventos se '
+            'construyen comparando cada sincronizacion con la anterior, asi que '
+            'solo cubren desde que la app empezo a observar.',
+        'La taxonomia de fallas es la OBSERVABLE (caida, fallo de comunicacion '
+            'reportado por el equipo, bypass). La API no expone codigos de '
+            'falla del hardware.',
+      ],
+    );
+
 /// Reporte de inventario RFID.
 MsgqReport buildRfidReport(
   RfidInventoryAudit audit, {
@@ -706,6 +826,89 @@ MsgqReport buildActivityReport(
             'horometro solo participan de la deteccion de fantasmas.',
         'Un equipo sin productos establecidos se omite de la auditoria de '
             'producto: no hay base con que juzgarlo.',
+      ],
+    );
+
+/// Reporte de desviacion de volumen.
+MsgqReport buildVolumeDeviationReport(
+  VolumeDeviationAudit audit, {
+  required String scope,
+}) =>
+    MsgqReport(
+      title: 'Desviacion de volumen',
+      subtitle: scope,
+      kpis: [
+        MsgqReportKpi('Entregas', _n(audit.kpis.analysed),
+            hint: 'con ambos volumenes'),
+        MsgqReportKpi('Marcadas', _n(audit.kpis.flagged)),
+        MsgqReportKpi('Peor desviacion', _pct(audit.kpis.worstDeviationPct)),
+        MsgqReportKpi('En disputa', _l(audit.kpis.disputedL)),
+        MsgqReportKpi('Saldo', _l(audit.kpis.netOverbilledL),
+            hint: audit.kpis.netOverbilledL >= 0
+                ? 'la guia cobra de mas'
+                : 'la guia cobra de menos'),
+      ],
+      sections: [
+        MsgqReportSection(
+          title: 'Por tanque',
+          note: 'El saldo es la resta con signo, no la suma de magnitudes: es '
+              'la cifra que se lleva a una reclamacion',
+          table: MsgqReportTable(
+            headers: const [
+              'Tanque',
+              'Entregas',
+              'Marcadas',
+              'Medido (L)',
+              'Guia (L)',
+              'Saldo (L)',
+              'Peor %',
+            ],
+            rows: audit.byTank
+                .map((t) => [
+                      t.tank,
+                      _n(t.deliveries),
+                      _n(t.flagged),
+                      _n(t.measuredL),
+                      _n(t.fieldL),
+                      _n(t.netOverbilledL),
+                      _pct(t.worstDeviationPct),
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Entregas marcadas',
+          table: MsgqReportTable(
+            headers: const [
+              'Fecha',
+              'Tanque',
+              'Producto',
+              'Medido (L)',
+              'Guia (L)',
+              'Diferencia (L)',
+              'Desv. %',
+              'Direccion',
+            ],
+            rows: audit.flaggedDeliveries
+                .map((d) => [
+                      _day(d.date),
+                      d.tank ?? '—',
+                      d.product ?? '—',
+                      _n(d.measuredVolume),
+                      _n(d.fieldVolume),
+                      _n(d.deviationL),
+                      _pct(d.deviationPct),
+                      d.direction.label,
+                    ])
+                .toList(),
+          ),
+        ),
+      ],
+      footnotes: const [
+        'Solo se comparan las entregas que traen los DOS volumenes; las que no, '
+            'quedan fuera del analisis y del conteo.',
+        'Las entregas por debajo de 100 L no se marcan: sobre pocos litros, una '
+            'diferencia minima dispara un porcentaje enorme sin relevancia.',
       ],
     );
 

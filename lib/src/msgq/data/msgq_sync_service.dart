@@ -19,6 +19,8 @@
 library;
 
 import '../../config/app_settings.dart';
+import '../../models/adapt_mac.dart';
+import '../domain/mac_event.dart';
 import '../domain/change_event.dart';
 import '../domain/equipment.dart';
 import '../domain/movement.dart';
@@ -40,6 +42,7 @@ enum SyncPhase {
   reconciliations('Reconciliaciones'),
   tanks('Tanques'),
   equipment('Equipos'),
+  consoles('Consolas'),
   changes('Log de auditoria'),
   pruning('Depurando historico');
 
@@ -67,6 +70,7 @@ class SyncResult {
     required this.equipment,
     required this.limits,
     required this.changes,
+    required this.macEvents,
     required this.elapsed,
     this.cancelled = false,
   });
@@ -77,6 +81,11 @@ class SyncResult {
   final int equipment;
   final int limits;
   final int changes;
+
+  /// Eventos de consola DERIVADOS al comparar el maestro contra el snapshot
+  /// anterior (no vienen de la API: no existen hasta que se observan).
+  final int macEvents;
+
   final Duration elapsed;
 
   /// El usuario aborto: lo ya escrito es valido, pero los watermarks de las
@@ -124,6 +133,7 @@ class MsgqSyncService {
     var equipment = 0;
     var limits = 0;
     var changes = 0;
+    var macEvents = 0;
 
     try {
       // -- movimientos (incremental) ---------------------------------------
@@ -195,6 +205,20 @@ class MsgqSyncService {
             ReplicaTable.equipment, DateTime.now().toUtc());
       }
 
+      // -- consolas (maestro + diff observado) ------------------------------
+      if (!cancelled()) {
+        onProgress?.call(const SyncProgress(phase: SyncPhase.consoles));
+        final consoles = await client.fetchAdaptMacs();
+        // Igual que los otros catalogos: una respuesta vacia casi siempre es un
+        // permiso faltante, y borrar el snapshot haria que el proximo ciclo
+        // reportara todo el sitio como recien observado.
+        if (consoles.isNotEmpty) {
+          macEvents = await replica.observeMacSnapshot(consoles);
+        }
+        await replica.setWatermark(
+            ReplicaTable.adaptMac, DateTime.now().toUtc());
+      }
+
       // -- log de auditoria (incremental) -----------------------------------
       if (!cancelled()) {
         onProgress?.call(const SyncProgress(phase: SyncPhase.changes));
@@ -230,6 +254,7 @@ class MsgqSyncService {
         equipment: equipment,
         limits: limits,
         changes: changes,
+        macEvents: macEvents,
         elapsed: DateTime.now().difference(started),
         cancelled: cancelled(),
       );
@@ -279,6 +304,8 @@ class MsgqDataset {
     this.limits = const [],
     this.rfidHistory = const [],
     this.productHistory = const [],
+    this.consoles = const [],
+    this.macHistory = const [],
     required this.loadedAt,
     this.lastSyncedAt,
   });
@@ -295,6 +322,10 @@ class MsgqDataset {
 
   /// Historial observado de tag -> equipo.
   final List<RfidAssignment> rfidHistory;
+
+  /// Maestro de consolas y su historial observado de eventos.
+  final List<AdaptMac> consoles;
+  final List<MacEvent> macHistory;
 
   /// Ventanas observadas de habilitacion de producto por equipo.
   final List<ProductAssignment> productHistory;

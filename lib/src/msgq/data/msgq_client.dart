@@ -15,6 +15,7 @@ library;
 
 import '../../api/adaptiq_client.dart';
 import '../../config/app_settings.dart';
+import '../../models/adapt_mac.dart';
 import '../domain/change_event.dart';
 import '../domain/equipment.dart';
 import '../domain/fms_vocabulary.dart';
@@ -170,6 +171,13 @@ class MsgqClient {
   // =========================================================================
   // Maestros e historicos
   // =========================================================================
+
+  /// Maestro de consolas AdaptMAC.
+  ///
+  /// Reexpone el fetch del notificador: la query y el descubrimiento de campos
+  /// opcionales ya estan resueltos alli, y duplicarlos daria dos consultas con
+  /// distinta seleccion de campos contra el mismo tipo.
+  Future<List<AdaptMac>> fetchAdaptMacs() => _client.fetchAdaptMacs();
 
   /// Tanques del sitio (catalogo completo; no admite filtro incremental).
   Future<List<Tank>> fetchTanks() async {

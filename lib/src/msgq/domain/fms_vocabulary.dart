@@ -201,6 +201,15 @@ const String noDataLabel = '(sin dato)';
 /// "stale" aunque su flag `online` siga en verdadero.
 const int adaptMacStaleMinutes = 30;
 
+/// Consola "inestable" (flapping): N o mas caidas dentro de la ventana movil.
+///
+/// Una consola que cae una vez y vuelve es un incidente; una que cae tres veces
+/// en un dia tiene un problema fisico —alimentacion, antena, enlace— y merece
+/// visita, no un reinicio remoto.
+const int macFlapWindowHours = 24;
+const int macFlapThreshold = 3;
+const String alertMacFlapping = 'Consola inestable (caidas frecuentes)';
+
 /// Tolerancia relativa antes de marcar un exceso de Safe Fill Level: solo se
 /// reporta si `volume > sfl * (1 + tolerancia)`. Filtra el ruido de medicion
 /// (los medidores tienen ~0.5-1% de error).

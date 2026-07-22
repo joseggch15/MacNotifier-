@@ -26,10 +26,12 @@ import '../analytics/burn_rate.dart';
 import '../analytics/equipment_analytics.dart';
 import '../analytics/grouping.dart';
 import '../analytics/hardware_health.dart';
+import '../analytics/mac_health.dart';
 import '../analytics/product_audit.dart';
 import '../analytics/rfid_inventory.dart';
 import '../analytics/tag_hopping.dart';
 import '../analytics/tank_analytics.dart';
+import '../analytics/volume_deviation.dart';
 import '../data/msgq_sync_service.dart';
 import '../data/replica_database.dart';
 import '../domain/fms_vocabulary.dart';
@@ -116,6 +118,8 @@ class MsgqDatasetController extends AsyncNotifier<MsgqDataset> {
       limits: await replica.consumptionLimits(),
       rfidHistory: await replica.rfidHistory(),
       productHistory: await replica.productHistory(),
+      consoles: await replica.adaptMacs(),
+      macHistory: await replica.macHistory(from: from),
       loadedAt: DateTime.now().toUtc(),
       lastSyncedAt: await replica.lastSyncedAt(ReplicaTable.movements),
     );
@@ -320,6 +324,37 @@ final productAuditProvider = Provider<ProductAudit?>((ref) {
     limits: dataset.limits,
     productHistory: dataset.productHistory,
   );
+});
+
+/// Salud historica de consolas AdaptMAC.
+///
+/// El historial es forward-only —solo existe desde que la app empezo a
+/// observar—, asi que el rango se pasa explicito para que la serie temporal
+/// rellene con ceros los dias previos en vez de arrancar el eje en el primer
+/// evento visto.
+final macHealthProvider = Provider<MacHealthAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  final range = ref.watch(msgqRangeProvider);
+  return MacHealthAudit.run(
+    history: dataset.macHistory,
+    consoles: dataset.consoles,
+    from: range.start(),
+  );
+});
+
+/// Auditoria de desviacion de volumen en entregas.
+///
+/// Se filtra por circuito igual que los tanques: una discrepancia de diesel y
+/// una de lubricantes no se suman en el mismo saldo.
+final volumeDeviationProvider = Provider<VolumeDeviationAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  final circuit = ref.watch(msgqCircuitProvider);
+  final movements = circuit == null
+      ? dataset.movements
+      : dataset.movements.where((m) => m.circuit == circuit).toList();
+  return VolumeDeviationAudit.run(movements: movements);
 });
 
 /// Filas por tabla de la replica (panel de diagnostico).

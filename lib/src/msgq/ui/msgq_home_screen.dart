@@ -17,11 +17,13 @@ import 'activity_screen.dart';
 import 'burn_rate_screen.dart';
 import 'equipment_screen.dart';
 import 'hardware_screen.dart';
+import 'mac_health_screen.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 import 'rfid_screen.dart';
 import 'tag_hopping_screen.dart';
 import 'tank_screen.dart';
+import 'volume_deviation_screen.dart';
 
 class MsgqHomeScreen extends ConsumerWidget {
   const MsgqHomeScreen({super.key});
@@ -109,6 +111,17 @@ class MsgqHomeScreen extends ConsumerWidget {
                   onTap: () => _open(context, const HardwareScreen()),
                 ),
                 _ModuleTile(
+                  icon: Icons.dns_outlined,
+                  title: l.t('Salud de consolas', 'Console health'),
+                  subtitle: l.t(
+                    'Historico de caidas: episodios con su duracion, consolas '
+                        'inestables y taxonomia de fallas',
+                    'Outage history: episodes with duration, flapping consoles '
+                        'and fault breakdown',
+                  ),
+                  onTap: () => _open(context, const MacHealthScreen()),
+                ),
+                _ModuleTile(
                   icon: Icons.nfc_outlined,
                   title: l.t('Inventario RFID', 'RFID inventory'),
                   subtitle: l.t(
@@ -129,6 +142,17 @@ class MsgqHomeScreen extends ConsumerWidget {
                         'operation and foreign product',
                   ),
                   onTap: () => _open(context, const ActivityScreen()),
+                ),
+                _ModuleTile(
+                  icon: Icons.compare_arrows,
+                  title: l.t('Desviacion de volumen', 'Volume deviation'),
+                  subtitle: l.t(
+                    'Medidor contra guia del camion en cada entrega, con el '
+                        'saldo de sobre-facturacion por tanque',
+                    'Meter vs delivery docket per delivery, with the '
+                        'overbilling balance per tank',
+                  ),
+                  onTap: () => _open(context, const VolumeDeviationScreen()),
                 ),
                 _ModuleTile(
                   icon: Icons.gpp_bad_outlined,
@@ -204,6 +228,8 @@ class _ReplicaPanel extends StatelessWidget {
       ReplicaTable.consumptionLimits: 'Limites SFL',
       ReplicaTable.rfidHistory: 'Asignaciones RFID observadas',
       ReplicaTable.productHistory: 'Productos habilitados observados',
+      ReplicaTable.adaptMac: 'Consolas AdaptMAC',
+      ReplicaTable.adaptMacHistory: 'Eventos de consola observados',
     };
     return MsgqSection(
       title: 'Replica local',
