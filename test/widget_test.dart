@@ -14,7 +14,7 @@ import 'package:adapt_mac_notifier/src/ui/home_screen.dart';
 
 void main() {
   testWidgets('sin token configurado, la pantalla principal monta el prompt '
-      'de configuracion con sus 4 pestañas', (tester) async {
+      'de configuracion con sus 5 pestañas', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final store = AppStore(await SharedPreferences.getInstance());
 
@@ -30,6 +30,7 @@ void main() {
     expect(find.text('AdaptIQ Monitor'), findsOneWidget);
     expect(find.text('Consolas'), findsOneWidget);
     expect(find.text('Sin ID'), findsOneWidget);
+    expect(find.text('Caudal/Temp'), findsOneWidget);
     // Sin token configurado, el cuerpo guia a la configuracion.
     expect(find.text('Abrir configuracion'), findsOneWidget);
   });

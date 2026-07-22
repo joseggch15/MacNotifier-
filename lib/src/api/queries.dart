@@ -64,15 +64,10 @@ query Deliveries(\$siteId: ID!, \$filter: MovementQuery, \$first: Int, \$after: 
   }
 }''';
 
-/// Despachos (dispenses): conexion paginada y filtrable incrementalmente.
-/// Campos minimos para la auditoria SFL y los reportes — todos en la query de
-/// produccion de MSGQ contra Merian.
-const dispensesQuery = '''
-query Dispenses(\$siteId: ID!, \$filter: MovementQuery, \$first: Int, \$after: String) {
-  site(id: \$siteId) {
-    dispenses(filter: \$filter, first: \$first, after: \$after) {
-      pageInfo { hasNextPage endCursor }
-      edges { node {
+/// Seleccion BASE del nodo Dispense: campos minimos para la auditoria SFL, los
+/// no-autorizados y los reportes — todos en la query de produccion de MSGQ
+/// contra Merian.
+const _dispenseSelection = '''
         id
         status
         type
@@ -83,16 +78,65 @@ query Dispenses(\$siteId: ID!, \$filter: MovementQuery, \$first: Int, \$after: S
         target { equipmentId description }
         source { code name }
         fieldUser { name }
-        adaptMac { code description }
+        adaptMac { code description }''';
+
+/// Campos de la interface Movement que la AUDITORIA de caudal/temperatura pide
+/// en la query de dispenses (subconjunto de [flowTempProbeFields]: solo los que
+/// el check realmente consume). Se incluyen unicamente cuando la introspeccion
+/// confirma que el tenant los expone (pedir uno inexistente rompe la query).
+const flowTempQueryFields = <String>{
+  'duration',
+  'peakFlowRate',
+  'transactionTemperature',
+};
+
+/// Arma la query de dispenses con los campos de Movement [extra] presentes en
+/// el tenant (descubiertos por introspeccion). Sin extras = query base, la
+/// misma que MSGQ usa en produccion.
+String buildDispensesQuery(Set<String> extra) {
+  final tail = extra.isEmpty ? '' : '\n        ${extra.join('\n        ')}';
+  return '''
+query Dispenses(\$siteId: ID!, \$filter: MovementQuery, \$first: Int, \$after: String) {
+  site(id: \$siteId) {
+    dispenses(filter: \$filter, first: \$first, after: \$after) {
+      pageInfo { hasNextPage endCursor }
+      edges { node {
+$_dispenseSelection$tail
       } }
     }
   }
 }''';
+}
+
+/// Query base de dispenses (sin campos de caudal/temperatura), para el backfill
+/// de "Sin ID" y demas usos que no necesitan los campos opcionales.
+final dispensesQuery = buildDispensesQuery(const {});
 
 /// Introspeccion del tipo Site para hallar la conexion de EQUIPOS (su nombre
 /// varia por tenant; igual que `SITE_FIELDS_INTROSPECTION` en MSGQ).
 const siteFieldsIntrospectionQuery =
     '{ __type(name: "Site") { fields { name } } }';
+
+/// Candidatos del nombre del tipo GraphQL de un MOVIMIENTO, para introspeccionar
+/// sus campos. Dispense/Delivery implementan la interface `Movement` (doc
+/// AdaptIQ p. 21-24): `__type` sobre el tipo concreto ya devuelve los campos
+/// heredados, asi que probamos los concretos primero y la interface al final.
+const movementTypeCandidates = ['Dispense', 'Delivery', 'Movement', 'Transaction'];
+
+/// Campos de la interface Movement para las alertas de CAUDAL y TEMPERATURA.
+/// Nombres en camelCase (formato de query real; el doc los lista en snake_case
+/// pero la API responde camelCase — ver `updated_from`→`updatedFrom`, p. 11).
+/// `averageFlowRate`/`flow*` no estan en el doc de jul-2023 pero MSGQ ya los
+/// mapea (`transform.flatten_movement`): son opcionales segun tenant.
+const flowTempProbeFields = <String>{
+  'duration', // Int, segundos (not null en la interface)
+  'peakFlowRate', // String (can be null)
+  'averageFlowRate', // opcional (no documentado en jul-2023)
+  'transactionTemperature', // Float (can be null), arg `unit`: celsius/fahrenheit
+  'transactionEndedAt',
+  'flowStartedAt',
+  'flowEndedAt',
+};
 
 /// Nombres candidatos de la conexion de equipos (mismos que MSGQ).
 const equipmentFieldCandidates = [

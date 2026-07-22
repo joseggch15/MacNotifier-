@@ -30,6 +30,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/adaptiq_client.dart';
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
+import '../core/flow_temp_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
 import '../core/unauthorised_check.dart';
@@ -56,6 +57,7 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
     siteId: s.cachedSiteId,
     knownOptionalFields: s.cachedAdaptMacFields,
     equipmentField: s.cachedEquipmentField,
+    knownMovementFields: s.cachedMovementFields,
   );
   try {
     // ---- 1. Consolas AdaptMAC ------------------------------------------------
@@ -126,11 +128,17 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
     ];
     final unauthorised = dispenseAudits.unauthorised;
     final unauthorisedEvents = dispenseAudits.unauthorisedEvents;
+    final flowTempAlerts = dispenseAudits.flowTempAlerts;
+    final flowTempEvents = [
+      for (final a in dispenseAudits.newFlowTemp)
+        if (!settings.isFlowTempProductMuted(a.product)) a,
+    ];
 
     // Acumula los productos vistos para la UI de silenciado.
     await s.addKnownProducts([
       for (final d in deliveries) d.product,
       for (final o in overfills) o.product,
+      for (final a in flowTempAlerts) a.product,
     ]);
 
     final result = HealthCheckResult(
@@ -143,6 +151,8 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
       overfillEvents: overfillEvents,
       unauthorised: unauthorised,
       unauthorisedEvents: unauthorisedEvents,
+      flowTempAlerts: flowTempAlerts,
+      flowTempEvents: flowTempEvents,
       offlineSince: offline.offlineSince,
       offlineAlarmEvents: offlineAlarmEvents,
     );
@@ -172,6 +182,10 @@ Future<HealthCheckResult> runHealthCheck({AppStore? store}) async {
       if (unauthorisedEvents.isNotEmpty) {
         await NotificationService.instance
             .showUnauthorisedEvents(unauthorisedEvents, settings);
+      }
+      if (flowTempEvents.isNotEmpty) {
+        await NotificationService.instance
+            .showFlowTempEvents(flowTempEvents, settings);
       }
     }
     return result;
@@ -250,6 +264,8 @@ Future<
       List<OverfillAlert> newOverfills,
       List<UnauthorisedTxn> unauthorised,
       List<UnauthorisedEvent> unauthorisedEvents,
+      List<FlowTempAlert> flowTempAlerts,
+      List<FlowTempAlert> newFlowTemp,
     })> _syncDispenseAudits(
   AdaptIQClient client,
   AppStore s,
@@ -279,22 +295,31 @@ Future<
   final overfillEnabled =
       settings.monitorOverfill && limits != null && limits.isNotEmpty;
   final unauthEnabled = settings.monitorUnauthorised;
+  final flowTempEnabled = settings.monitorFlowTemp;
 
-  if (!overfillEnabled && !unauthEnabled) {
+  if (!overfillEnabled && !unauthEnabled && !flowTempEnabled) {
     // Nada que auditar sobre despachos: no se consulta la API.
     return (
       overfills: s.loadOverfillSnapshot(),
       newOverfills: const <OverfillAlert>[],
       unauthorised: sortedOpen(s.loadUnauthorisedOpen().values),
       unauthorisedEvents: const <UnauthorisedEvent>[],
+      flowTempAlerts: s.loadFlowTempSnapshot(),
+      newFlowTemp: const <FlowTempAlert>[],
     );
   }
 
-  // 2. Despachos incrementales (un solo fetch para ambas auditorias).
+  // 2. Despachos incrementales (un solo fetch para las tres auditorias). Solo
+  //    se piden los campos de caudal/temperatura si esa auditoria esta activa.
   final watermark = s.dispenseWatermark;
   final since = (watermark ?? now.subtract(kDispenseLookback))
       .subtract(kDeliveryWatermarkOverlap);
-  final dispenses = await client.fetchDispenses(updatedFrom: since);
+  final dispenses = await client.fetchDispenses(
+    updatedFrom: since,
+    includeFlowTemp: flowTempEnabled,
+  );
+  // Persiste los campos de Movement descubiertos para no re-introspeccionar.
+  await s.saveCachedMovementFields(client.discoveredMovementFields);
 
   // 3a. Sobrellenados SFL: dedup one-shot por dispense id. TODOS los detectados
   // se marcan como vistos (silenciados incluidos).
@@ -342,7 +367,41 @@ Future<
     unauthorisedEvents = diff.events;
   }
 
-  // 4. Watermark al mayor recordUpdatedAt visto (una vez para ambas).
+  // 3c. Anomalias de caudal/temperatura: dedup one-shot por dispense id (igual
+  // que los sobrellenados; el despacho ya ocurrio, no "se recupera").
+  var flowTempAlerts = s.loadFlowTempSnapshot();
+  var newFlowTemp = const <FlowTempAlert>[];
+  if (flowTempEnabled) {
+    final detected = detectFlowTempAnomalies(
+      dispenses: dispenses,
+      thresholds: FlowTempThresholds.fromSettings(settings),
+    );
+    final seen = s.loadNotifiedFlowTempIds();
+    newFlowTemp = [
+      for (final a in detected)
+        if (!seen.contains(a.dispenseId)) a,
+    ];
+    await s.saveNotifiedFlowTempIds(
+      {...seen, for (final a in detected) a.dispenseId},
+      now: now,
+    );
+    final cutoff = now.subtract(const Duration(days: kFlowTempKeepDays));
+    final byId = <String, FlowTempAlert>{
+      for (final a in s.loadFlowTempSnapshot()) a.dispenseId: a,
+      for (final a in detected) a.dispenseId: a,
+    };
+    flowTempAlerts = byId.values
+        .where((a) => (a.collectedAt ?? now).isAfter(cutoff))
+        .toList()
+      ..sort((a, b) {
+        final ta = a.collectedAt ?? DateTime(0);
+        final tb = b.collectedAt ?? DateTime(0);
+        return tb.compareTo(ta);
+      });
+    await s.saveFlowTempSnapshot(flowTempAlerts);
+  }
+
+  // 4. Watermark al mayor recordUpdatedAt visto (una vez para las tres).
   var maxUpdated = watermark ?? since;
   for (final d in dispenses) {
     final u = d.updatedAt;
@@ -355,5 +414,7 @@ Future<
     newOverfills: newOverfills,
     unauthorised: unauthorised,
     unauthorisedEvents: unauthorisedEvents,
+    flowTempAlerts: flowTempAlerts,
+    newFlowTemp: newFlowTemp,
   );
 }

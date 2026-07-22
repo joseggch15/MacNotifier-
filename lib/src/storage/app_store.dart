@@ -21,6 +21,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
+import '../core/flow_temp_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
 import '../core/unauthorised_check.dart';
@@ -48,14 +49,20 @@ class AppStore {
   static const _kMonitorOverfill = 'cfg.monitorOverfill';
   static const _kMonitorUnauthorised = 'cfg.monitorUnauthorised';
   static const _kUnauthorisedLanes = 'cfg.unauthorisedLanes';
+  static const _kMonitorFlowTemp = 'cfg.monitorFlowTemp';
+  static const _kFlowMinLpm = 'cfg.flowMinLpm';
+  static const _kFlowMaxLpm = 'cfg.flowMaxLpm';
+  static const _kTempMaxCelsius = 'cfg.tempMaxCelsius';
   static const _kMutedSfl = 'cfg.mutedSflProducts';
   static const _kMutedDeliveries = 'cfg.mutedDeliveryProducts';
+  static const _kMutedFlowTemp = 'cfg.mutedFlowTempProducts';
   static const _kMutedConsoles = 'cfg.mutedConsoles';
   static const _kLanguage = 'cfg.languageCode';
   static const _kThemeMode = 'cfg.themeMode';
 
   static const _kCacheSiteId = 'cache.resolvedSiteId';
   static const _kCacheMacFields = 'cache.adaptMacFields';
+  static const _kCacheMovementFields = 'cache.movementFields';
   static const _kCacheEquipmentField = 'cache.equipmentField';
   static const _kCacheSflLimits = 'cache.sflLimits';
   static const _kCacheSflFetchedAt = 'cache.sflLimitsFetchedAt';
@@ -73,6 +80,8 @@ class AppStore {
   static const _kDispenseWatermark = 'state.dispenses.watermark';
   static const _kOverfillNotified = 'state.overfill.notified';
   static const _kOverfillSnapshot = 'state.overfill.snapshot';
+  static const _kFlowTempNotified = 'state.flowTemp.notified';
+  static const _kFlowTempSnapshot = 'state.flowTemp.snapshot';
   static const _kKnownProducts = 'state.knownProducts';
 
   Future<void> reload() => _prefs.reload();
@@ -99,9 +108,15 @@ class AppStore {
       monitorUnauthorised: _prefs.getBool(_kMonitorUnauthorised) ?? true,
       unauthorisedLanes: _prefs.getStringList(_kUnauthorisedLanes) ??
           kDefaultUnauthorisedLanes,
+      monitorFlowTemp: _prefs.getBool(_kMonitorFlowTemp) ?? true,
+      flowMinLpm: _prefs.getDouble(_kFlowMinLpm) ?? kDefaultFlowMinLpm,
+      flowMaxLpm: _prefs.getDouble(_kFlowMaxLpm) ?? kDefaultFlowMaxLpm,
+      tempMaxCelsius: _prefs.getDouble(_kTempMaxCelsius) ?? kDefaultTempMaxCelsius,
       mutedSflProducts: _prefs.getStringList(_kMutedSfl) ?? const [],
       mutedDeliveryProducts:
           _prefs.getStringList(_kMutedDeliveries) ?? const [],
+      mutedFlowTempProducts:
+          _prefs.getStringList(_kMutedFlowTemp) ?? const [],
       mutedConsoles: _prefs.getStringList(_kMutedConsoles) ?? const [],
       languageCode: _prefs.getString(_kLanguage) ?? 'es',
       themeMode: _prefs.getString(_kThemeMode) ?? 'dark',
@@ -124,8 +139,13 @@ class AppStore {
     await _prefs.setBool(_kMonitorOverfill, s.monitorOverfill);
     await _prefs.setBool(_kMonitorUnauthorised, s.monitorUnauthorised);
     await _prefs.setStringList(_kUnauthorisedLanes, s.unauthorisedLanes);
+    await _prefs.setBool(_kMonitorFlowTemp, s.monitorFlowTemp);
+    await _prefs.setDouble(_kFlowMinLpm, s.flowMinLpm);
+    await _prefs.setDouble(_kFlowMaxLpm, s.flowMaxLpm);
+    await _prefs.setDouble(_kTempMaxCelsius, s.tempMaxCelsius);
     await _prefs.setStringList(_kMutedSfl, s.mutedSflProducts);
     await _prefs.setStringList(_kMutedDeliveries, s.mutedDeliveryProducts);
+    await _prefs.setStringList(_kMutedFlowTemp, s.mutedFlowTempProducts);
     await _prefs.setStringList(_kMutedConsoles, s.mutedConsoles);
     await _prefs.setString(_kLanguage, s.languageCode);
     await _prefs.setString(_kThemeMode, s.themeMode);
@@ -136,6 +156,7 @@ class AppStore {
   Future<void> clearApiCaches() async {
     await _prefs.remove(_kCacheSiteId);
     await _prefs.remove(_kCacheMacFields);
+    await _prefs.remove(_kCacheMovementFields);
     await _prefs.remove(_kCacheEquipmentField);
     await _prefs.remove(_kCacheSflLimits);
     await _prefs.remove(_kCacheSflFetchedAt);
@@ -161,6 +182,18 @@ class AppStore {
   Future<void> saveCachedAdaptMacFields(Set<String>? fields) async {
     if (fields == null) return;
     await _prefs.setStringList(_kCacheMacFields, fields.toList()..sort());
+  }
+
+  /// Campos de caudal/temperatura del movimiento que el tenant expone
+  /// (descubiertos por introspeccion). null = aun sin descubrir.
+  Set<String>? get cachedMovementFields {
+    final raw = _prefs.getStringList(_kCacheMovementFields);
+    return raw?.toSet();
+  }
+
+  Future<void> saveCachedMovementFields(Set<String>? fields) async {
+    if (fields == null) return;
+    await _prefs.setStringList(_kCacheMovementFields, fields.toList()..sort());
   }
 
   // -- estado de condiciones (dedup de notificaciones) -----------------------------
@@ -209,6 +242,7 @@ class AppStore {
         deliveries: loadDeliverySnapshot(),
         overfills: loadOverfillSnapshot(),
         unauthorised: sortedOpen(loadUnauthorisedOpen().values),
+        flowTempAlerts: loadFlowTempSnapshot(),
         offlineSince: loadOfflineSince(),
       );
     } on FormatException {
@@ -537,6 +571,71 @@ class AppStore {
     await _prefs.setString(
       _kOverfillSnapshot,
       jsonEncode([for (final o in overfills) o.toJson()]),
+    );
+  }
+
+  // -- anomalias de caudal/temperatura (dedup one-shot por dispense id) -----------
+
+  /// Ids de despachos cuya anomalia de caudal/temp YA se proceso.
+  Set<String> loadNotifiedFlowTempIds() {
+    final raw = _prefs.getString(_kFlowTempNotified);
+    if (raw == null) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return {};
+      return decoded.keys.toSet();
+    } on FormatException {
+      return {};
+    }
+  }
+
+  Future<void> saveNotifiedFlowTempIds(Set<String> ids,
+      {required DateTime now}) async {
+    // id -> timestamp de primera vista, para podar entradas viejas (el despacho
+    // ya no reaparece en la consulta incremental).
+    final previousRaw = _prefs.getString(_kFlowTempNotified);
+    var previous = const <String, dynamic>{};
+    if (previousRaw != null) {
+      try {
+        final decoded = jsonDecode(previousRaw);
+        if (decoded is Map<String, dynamic>) previous = decoded;
+      } on FormatException {
+        // estado corrupto: se regenera
+      }
+    }
+    final encoded = <String, String>{};
+    for (final id in ids) {
+      final t = previous[id]?.toString() ?? now.toIso8601String();
+      final age = DateTime.tryParse(t);
+      if (age != null &&
+          now.difference(age.toUtc()) > kDeliveryConditionsMaxAge) {
+        continue;
+      }
+      encoded[id] = t;
+    }
+    await _prefs.setString(_kFlowTempNotified, jsonEncode(encoded));
+  }
+
+  /// Anomalias recientes para la UI (ventana local kFlowTempKeepDays).
+  List<FlowTempAlert> loadFlowTempSnapshot() {
+    final raw = _prefs.getString(_kFlowTempSnapshot);
+    if (raw == null) return [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return [];
+      return [
+        for (final a in decoded)
+          if (a is Map<String, dynamic>) FlowTempAlert.fromJson(a),
+      ];
+    } on FormatException {
+      return [];
+    }
+  }
+
+  Future<void> saveFlowTempSnapshot(List<FlowTempAlert> alerts) async {
+    await _prefs.setString(
+      _kFlowTempSnapshot,
+      jsonEncode([for (final a in alerts) a.toJson()]),
     );
   }
 

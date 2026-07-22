@@ -6,6 +6,8 @@
 ///     varianza medidor-vs-guia, las problematicas primero.
 ///   * SFL — sobrellenados (la alarma "Equipment Overfill" de AdaptIQ
 ///     reconstruida desde despachos × limites SFL).
+///   * Caudal/Temp — anomalias de caudal (volume/duration) y temperatura por
+///     transaccion.
 library;
 
 import 'package:flutter/material.dart';
@@ -15,6 +17,7 @@ import 'package:intl/intl.dart';
 import '../background/health_runner.dart';
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
+import '../core/flow_temp_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
 import '../core/unauthorised_check.dart';
@@ -54,7 +57,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final l = L10n(settings.languageCode);
 
     return DefaultTabController(
-      length: 4,
+      length: 5,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('AdaptIQ Monitor'),
@@ -91,6 +94,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             Tab(
                 icon: const Icon(Icons.gpp_maybe_outlined),
                 text: l.t('Sin ID', 'No ID')),
+            Tab(
+                icon: const Icon(Icons.speed_outlined),
+                text: l.t('Caudal/Temp', 'Flow/Temp')),
           ]),
         ),
         body: !settings.isConfigured
@@ -129,6 +135,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           settings: settings,
                         ),
                         _UnauthorisedTab(
+                          result: result,
+                          filter: _filter,
+                          settings: settings,
+                        ),
+                        _FlowTempTab(
                           result: result,
                           filter: _filter,
                           settings: settings,
@@ -1238,6 +1249,193 @@ class _UnauthorisedTile extends StatelessWidget {
             if ((t.adaptMac ?? '').isNotEmpty) t.adaptMac!,
             if (t.collectedAt != null)
               DateFormat('dd/MM HH:mm').format(t.collectedAt!.toLocal()),
+          ].join(' · '),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+    );
+  }
+}
+
+// ===========================================================================
+// Pestaña Caudal/Temp (anomalias de caudal y temperatura por transaccion)
+// ===========================================================================
+
+class _FlowTempTab extends ConsumerWidget {
+  const _FlowTempTab({
+    required this.result,
+    required this.filter,
+    required this.settings,
+  });
+
+  final HealthCheckResult result;
+  final String filter;
+  final AppSettings settings;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = L10n(settings.languageCode);
+    if (!settings.monitorFlowTemp) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text(
+            l.t(
+                'El monitoreo de caudal y temperatura esta desactivado.\n'
+                    'Activalo en Configuracion → Caudal y temperatura.',
+                'Flow and temperature monitoring is disabled.\n'
+                    'Enable it in Settings → Flow rate and temperature.'),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+
+    final query = filter.trim().toLowerCase();
+    final visible = result.flowTempAlerts.where((a) {
+      if (query.isEmpty) return true;
+      return '${a.lane ?? ''} ${a.equipmentId ?? ''} ${a.product ?? ''} ${a.fieldUser ?? ''}'
+          .toLowerCase()
+          .contains(query);
+    }).toList();
+
+    final flowCount = visible
+        .where((a) =>
+            a.conditions.contains(FlowTempCondition.lowFlow) ||
+            a.conditions.contains(FlowTempCondition.highFlow))
+        .length;
+    final tempCount = visible
+        .where((a) =>
+            a.conditions.contains(FlowTempCondition.highTemp) ||
+            a.conditions.contains(FlowTempCondition.lowTemp))
+        .length;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _Kpi(
+                label: l.t('Anomalias ${kFlowTempKeepDays}d',
+                    'Anomalies ${kFlowTempKeepDays}d'),
+                value: '${visible.length}',
+                color: visible.isEmpty ? Colors.green : Colors.red,
+              ),
+              _Kpi(
+                label: l.t('Caudal', 'Flow'),
+                value: '$flowCount',
+                color: flowCount == 0 ? Colors.green : Colors.orange,
+              ),
+              _Kpi(
+                label: l.t('Temperatura', 'Temperature'),
+                value: '$tempCount',
+                color: tempCount == 0 ? Colors.green : Colors.orange,
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () => ref.read(consolesProvider.notifier).refreshNow(),
+            child: visible.isEmpty
+                ? ListView(
+                    children: [
+                      const SizedBox(height: 120),
+                      Center(
+                          child: Text(l.t(
+                              'Sin anomalias de caudal/temperatura en la '
+                                  'ventana local.',
+                              'No flow/temperature anomalies in the local '
+                                  'window.'))),
+                    ],
+                  )
+                : ListView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: visible.length,
+                    itemBuilder: (context, i) => _FlowTempTile(
+                      alert: visible[i],
+                      muted:
+                          settings.isFlowTempProductMuted(visible[i].product),
+                      l: l,
+                    ),
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _FlowTempTile extends StatelessWidget {
+  const _FlowTempTile({
+    required this.alert,
+    required this.muted,
+    required this.l,
+  });
+
+  final FlowTempAlert alert;
+  final bool muted;
+  final L10n l;
+
+  static final NumberFormat _num = NumberFormat('#,##0.0');
+
+  @override
+  Widget build(BuildContext context) {
+    final a = alert;
+    final color = muted
+        ? Colors.blueGrey
+        : a.isCritical
+            ? Colors.red
+            : Colors.orange;
+    final title = a.lane ??
+        a.equipmentId ??
+        l.t('Despacho ${a.dispenseId}', 'Dispense ${a.dispenseId}');
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: ListTile(
+        dense: true,
+        leading: Icon(
+            muted ? Icons.notifications_off_outlined : Icons.speed,
+            size: 18,
+            color: color),
+        title: Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 4,
+          runSpacing: 2,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Text(title,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            if (a.conditions.contains(FlowTempCondition.highFlow))
+              _Badge(l.t('CAUDAL ALTO', 'HIGH FLOW'), Colors.red),
+            if (a.conditions.contains(FlowTempCondition.lowFlow))
+              _Badge(l.t('CAUDAL BAJO', 'LOW FLOW'), Colors.orange),
+            if (a.conditions.contains(FlowTempCondition.highTemp))
+              _Badge(l.t('TEMP ALTA', 'HIGH TEMP'), Colors.red),
+            if (a.conditions.contains(FlowTempCondition.lowTemp))
+              _Badge(l.t('TEMP BAJA', 'LOW TEMP'), Colors.orange),
+            if (muted) _Badge(l.t('SILENCIADO', 'MUTED'), Colors.blueGrey),
+          ],
+        ),
+        subtitle: Text(
+          [
+            if (a.flowLpm != null)
+              '${l.t('Caudal', 'Flow')} ${_num.format(a.flowLpm)} L/min',
+            if (a.peakFlowRate != null)
+              '${l.t('pico', 'peak')} ${_num.format(a.peakFlowRate)} L/min',
+            if (a.temperatureC != null) '${a.temperatureC!.toStringAsFixed(1)} °C',
+            if (a.volume != null) '${_num.format(a.volume)} L',
+            if ((a.product ?? '').isNotEmpty) a.product!,
+            if ((a.fieldUser ?? '').isNotEmpty)
+              '${l.t('Operador', 'Operator')}: ${a.fieldUser}',
+            if (a.collectedAt != null)
+              DateFormat('dd/MM HH:mm').format(a.collectedAt!.toLocal()),
           ].join(' · '),
           maxLines: 2,
           overflow: TextOverflow.ellipsis,

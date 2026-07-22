@@ -22,6 +22,7 @@ library;
 import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
 import 'delivery_check.dart';
+import 'flow_temp_check.dart';
 import 'sfl_check.dart';
 import 'unauthorised_check.dart';
 
@@ -57,6 +58,8 @@ class HealthCheckResult {
     this.overfillEvents = const [],
     this.unauthorised = const [],
     this.unauthorisedEvents = const [],
+    this.flowTempAlerts = const [],
+    this.flowTempEvents = const [],
     this.offlineSince = const {},
     this.offlineAlarmEvents = const [],
   });
@@ -80,6 +83,13 @@ class HealthCheckResult {
 
   /// Transiciones de no autorizados de este ciclo (nuevos / asignados).
   final List<UnauthorisedEvent> unauthorisedEvents;
+
+  /// Anomalias de caudal/temperatura recientes (ventana kFlowTempKeepDays).
+  final List<FlowTempAlert> flowTempAlerts;
+
+  /// Anomalias de caudal/temperatura NUEVAS de este ciclo (ya filtradas por
+  /// silenciado): lo que se notifica.
+  final List<FlowTempAlert> flowTempEvents;
 
   /// code -> instante en que la consola se observo OFFLINE por primera vez
   /// (para mostrar "lleva N min sin conexion" y disparar la alarma).

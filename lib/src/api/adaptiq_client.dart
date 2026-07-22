@@ -33,6 +33,29 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+/// Resultado del diagnostico de introspeccion de campos de movimiento
+/// (caudal/temperatura) contra el tenant en vivo.
+class MovementFieldProbe {
+  const MovementFieldProbe({
+    required this.typeName,
+    required this.present,
+    required this.missing,
+    required this.totalFields,
+  });
+
+  /// Tipo concreto sobre el que se resolvio la introspeccion (p. ej. 'Dispense').
+  final String typeName;
+
+  /// Campos objetivo (caudal/temp) que el tenant SI expone.
+  final Set<String> present;
+
+  /// Campos objetivo que el tenant NO expone (o no permite al token).
+  final Set<String> missing;
+
+  /// Cantidad total de campos del tipo (para detectar introspeccion deshabilitada).
+  final int totalFields;
+}
+
 /// Token ausente, invalido o expirado (HTTP 401/403).
 class AuthException extends ApiException {
   const AuthException(super.message);
@@ -54,10 +77,12 @@ class AdaptIQClient {
     String? siteId,
     Set<String>? knownOptionalFields,
     String? equipmentField,
+    Set<String>? knownMovementFields,
     http.Client? httpClient,
   })  : _siteId = (siteId != null && siteId.isNotEmpty) ? siteId : null,
         _optionalFields = knownOptionalFields,
         _equipmentField = equipmentField,
+        _movementFields = knownMovementFields,
         _http = httpClient ?? http.Client();
 
   final AppSettings _settings;
@@ -68,6 +93,12 @@ class AdaptIQClient {
 
   /// Conexion de equipos del tenant: null = sin descubrir; '' = no existe.
   String? _equipmentField;
+
+  /// Campos de caudal/temperatura ([queries.flowTempQueryFields]) que el tenant
+  /// expone, descubiertos por introspeccion del tipo de movimiento. null = sin
+  /// descubrir; conjunto vacio = ninguno disponible.
+  Set<String>? _movementFields;
+
   DateTime? _lastRequestAt;
 
   // En movil los reintentos son cortos: el ciclo de primer plano corre cada
@@ -85,6 +116,9 @@ class AdaptIQClient {
 
   /// Conexion de equipos descubierta ('' = el tenant no expone equipos).
   String? get equipmentField => _equipmentField;
+
+  /// Campos de caudal/temperatura del movimiento descubiertos (para cachear).
+  Set<String>? get discoveredMovementFields => _movementFields;
 
   void close() => _http.close();
 
@@ -147,20 +181,43 @@ class AdaptIQClient {
   }
 
   /// Trae los despachos actualizados desde [updatedFrom] (incremental).
-  Future<List<Dispense>> fetchDispenses({DateTime? updatedFrom}) async {
+  ///
+  /// Con [includeFlowTemp] se piden ademas los campos de caudal/temperatura de
+  /// la interface Movement (`duration`, `peakFlowRate`, `transactionTemperature`)
+  /// — pero SOLO los que la introspeccion confirma presentes, porque pedir un
+  /// campo inexistente rompe TODA la query. Si aun asi la query con extras
+  /// falla, reintenta UNA vez con la base (igual que [fetchAdaptMacs]).
+  Future<List<Dispense>> fetchDispenses({
+    DateTime? updatedFrom,
+    bool includeFlowTemp = false,
+  }) async {
     final siteId = await _resolveSiteId();
-    final nodes = await _paginateSiteConnection(
-      queries.dispensesQuery,
-      'dispenses',
-      {
-        'siteId': siteId,
-        'filter': {
-          if (updatedFrom != null)
-            'updatedFrom': updatedFrom.toUtc().toIso8601String(),
-        },
-        'first': kPageSize,
+    final variables = {
+      'siteId': siteId,
+      'filter': {
+        if (updatedFrom != null)
+          'updatedFrom': updatedFrom.toUtc().toIso8601String(),
       },
-    );
+      'first': kPageSize,
+    };
+    final extra =
+        includeFlowTemp ? await _discoverMovementFields() : const <String>{};
+    List<Map<String, dynamic>> nodes;
+    try {
+      nodes = await _paginateSiteConnection(
+        queries.buildDispensesQuery(extra),
+        'dispenses',
+        variables,
+      );
+    } on GraphQLException {
+      if (extra.isEmpty) rethrow;
+      _movementFields = <String>{}; // el tenant rechaza los extras: no reintentar
+      nodes = await _paginateSiteConnection(
+        queries.buildDispensesQuery(const {}),
+        'dispenses',
+        variables,
+      );
+    }
     return [for (final n in nodes) Dispense.fromNode(n)];
   }
 
@@ -228,6 +285,70 @@ class AdaptIQClient {
       }
     }
     return limits;
+  }
+
+  /// DIAGNOSTICO: introspecciona el tipo de movimiento del tenant y reporta
+  /// cuales de los campos de CAUDAL/TEMPERATURA ([queries.flowTempProbeFields])
+  /// estan disponibles. Sirve para verificar — antes de cablearlos al polling —
+  /// que pedirlos no rompera la query (regla de oro del modelo: un campo
+  /// inexistente rompe TODA la query). No depende del site id.
+  Future<MovementFieldProbe> probeMovementFields() async {
+    final introspected = await _introspectMovementType();
+    final names = introspected.fields;
+    final resolvedType = introspected.typeName;
+    if (names == null || resolvedType == null) {
+      throw const GraphQLException(
+          'La introspeccion no esta disponible o el tenant no expone un tipo de '
+          'movimiento (Dispense/Delivery/Movement). No se puede verificar caudal '
+          'ni temperatura por esta via.');
+    }
+    final present = queries.flowTempProbeFields.intersection(names);
+    return MovementFieldProbe(
+      typeName: resolvedType,
+      present: present,
+      missing: queries.flowTempProbeFields.difference(present),
+      totalFields: names.length,
+    );
+  }
+
+  /// Introspecciona el primer tipo de movimiento que exista en el tenant y
+  /// devuelve su nombre y el conjunto de sus campos (null = ninguno hallado o
+  /// introspeccion deshabilitada). Helper compartido por [probeMovementFields]
+  /// (diagnostico) y [_discoverMovementFields] (camino del fetch).
+  Future<({String? typeName, Set<String>? fields})>
+      _introspectMovementType() async {
+    for (final typeName in queries.movementTypeCandidates) {
+      Map<String, dynamic> data;
+      try {
+        data = await _execute(queries.typeFieldsIntrospection(typeName));
+      } on AuthException {
+        rethrow;
+      } on ApiException {
+        continue; // introspeccion deshabilitada o tipo inexistente: probar otro
+      }
+      final type = data['__type'];
+      if (type is! Map<String, dynamic>) continue; // tipo no existe en el tenant
+      final fields = type['fields'];
+      final names = <String>{
+        if (fields is List)
+          for (final f in fields)
+            if (f is Map && f['name'] != null) f['name'].toString(),
+      };
+      return (typeName: typeName, fields: names);
+    }
+    return (typeName: null, fields: null);
+  }
+
+  /// Cuales de [queries.flowTempQueryFields] expone el tenant (cacheado). Si la
+  /// introspeccion no esta disponible devuelve el conjunto vacio: no se pediran
+  /// campos opcionales y el fetch usa la query base, intacta.
+  Future<Set<String>> _discoverMovementFields() async {
+    final cached = _movementFields;
+    if (cached != null) return cached;
+    final introspected = await _introspectMovementType();
+    final names = introspected.fields;
+    return _movementFields =
+        names == null ? <String>{} : queries.flowTempQueryFields.intersection(names);
   }
 
   // -- resolucion de sitio ----------------------------------------------------

@@ -92,6 +92,43 @@ const kOverfillKeepDays = 7;
 /// es la consulta mas pesada: el maestro cambia poco, una vez al dia basta).
 const kSflLimitsMaxAge = Duration(hours: 24);
 
+// --- Anomalias de caudal y temperatura (interface Movement) ------------------
+// Cruza el `volume` despachado con la `duration` (segundos) del movimiento para
+// el caudal medio (L/min) y vigila la `transactionTemperature` (°C). Un caudal
+// muy BAJO sugiere obstruccion/medidor sucio; uno muy ALTO, que el medidor gira
+// en vacio (posible bypass fisico). Temperaturas fuera de rango delatan un
+// sensor termico averiado. Campos confirmados en el doc AdaptIQ (interface
+// Movement) y en MSGQ (`transform.flatten_movement`: peakFlowRate/duration).
+
+/// Caudal medio (L/min) por debajo del cual se alerta OBSTRUCCION. Referencia:
+/// el simulador de MSGQ modela caudales de despacho de ~40-130 L/min.
+const kDefaultFlowMinLpm = 15.0;
+
+/// Caudal medio (L/min) por encima del cual se alerta MEDIDOR EN VACIO/BYPASS.
+const kDefaultFlowMaxLpm = 180.0;
+
+/// Temperatura (°C) por encima de la cual se alerta SENSOR AVERIADO.
+const kDefaultTempMaxCelsius = 60.0;
+
+/// Temperatura (°C) por debajo de la cual se alerta sensor congelado/averiado.
+/// No configurable: una lectura asi solo ocurre con hardware roto.
+const kFlowTempMinCelsius = -10.0;
+
+/// Volumen minimo (L) para evaluar el caudal calculado: por debajo de esto el
+/// cociente volume/duration es ruido (un goteo de 2 L da caudales absurdos).
+const kFlowTempMinVolumeL = 20.0;
+
+/// Duracion minima (s) para evaluar el caudal calculado: idem, una transaccion
+/// de 1-2 s no permite estimar un caudal estable.
+const kFlowTempMinDurationS = 5;
+
+/// Exceso/deficit relativo respecto al umbral a partir del cual la alerta de
+/// caudal escala a CRITICA (p. ej. caudal > maxLpm * 1.5).
+const kFlowTempCriticalFactor = 1.5;
+
+/// Cuanto historial de anomalias de caudal/temp conserva el snapshot local.
+const kFlowTempKeepDays = 7;
+
 /// Tope de productos "conocidos" que se acumulan para la UI de silenciado.
 const kMaxKnownProducts = 60;
 
@@ -116,8 +153,13 @@ class AppSettings {
     this.monitorOverfill = true,
     this.monitorUnauthorised = true,
     this.unauthorisedLanes = kDefaultUnauthorisedLanes,
+    this.monitorFlowTemp = true,
+    this.flowMinLpm = kDefaultFlowMinLpm,
+    this.flowMaxLpm = kDefaultFlowMaxLpm,
+    this.tempMaxCelsius = kDefaultTempMaxCelsius,
     this.mutedSflProducts = const [],
     this.mutedDeliveryProducts = const [],
+    this.mutedFlowTempProducts = const [],
     this.mutedConsoles = const [],
     this.languageCode = 'es',
     this.themeMode = 'dark',
@@ -174,12 +216,29 @@ class AppSettings {
   /// Puntos de despacho vigilados para el monitor de no autorizados sin ID.
   final List<String> unauthorisedLanes;
 
+  /// Monitorear anomalias de CAUDAL (volume/duration) y TEMPERATURA
+  /// (transactionTemperature) por transaccion. Requiere que el tenant exponga
+  /// esos campos de la interface Movement (se descubren por introspeccion).
+  final bool monitorFlowTemp;
+
+  /// Caudal medio (L/min) minimo antes de alertar obstruccion.
+  final double flowMinLpm;
+
+  /// Caudal medio (L/min) maximo antes de alertar medidor en vacio / bypass.
+  final double flowMaxLpm;
+
+  /// Temperatura (°C) maxima antes de alertar sensor termico averiado.
+  final double tempMaxCelsius;
+
   /// Productos SILENCIADOS para las alertas de SFL (etiquetas normalizadas con
   /// [normProduct]). El interes principal es el diesel: el resto se puede callar.
   final List<String> mutedSflProducts;
 
   /// Productos SILENCIADOS para las alertas de entregas.
   final List<String> mutedDeliveryProducts;
+
+  /// Productos SILENCIADOS para las alertas de caudal/temperatura.
+  final List<String> mutedFlowTempProducts;
 
   /// Consolas AdaptMAC silenciadas (por codigo): el usuario puede apagar las
   /// notificaciones de un MAC concreto (p. ej. los service trucks) sin dejar
@@ -197,6 +256,9 @@ class AppSettings {
 
   bool isDeliveryProductMuted(String? product) =>
       mutedDeliveryProducts.contains(normProduct(product));
+
+  bool isFlowTempProductMuted(String? product) =>
+      mutedFlowTempProducts.contains(normProduct(product));
 
   bool isConsoleMuted(String? code) =>
       code != null && mutedConsoles.contains(code.trim());
@@ -230,8 +292,13 @@ class AppSettings {
     bool? monitorOverfill,
     bool? monitorUnauthorised,
     List<String>? unauthorisedLanes,
+    bool? monitorFlowTemp,
+    double? flowMinLpm,
+    double? flowMaxLpm,
+    double? tempMaxCelsius,
     List<String>? mutedSflProducts,
     List<String>? mutedDeliveryProducts,
+    List<String>? mutedFlowTempProducts,
     List<String>? mutedConsoles,
     String? languageCode,
     String? themeMode,
@@ -252,9 +319,15 @@ class AppSettings {
       monitorOverfill: monitorOverfill ?? this.monitorOverfill,
       monitorUnauthorised: monitorUnauthorised ?? this.monitorUnauthorised,
       unauthorisedLanes: unauthorisedLanes ?? this.unauthorisedLanes,
+      monitorFlowTemp: monitorFlowTemp ?? this.monitorFlowTemp,
+      flowMinLpm: flowMinLpm ?? this.flowMinLpm,
+      flowMaxLpm: flowMaxLpm ?? this.flowMaxLpm,
+      tempMaxCelsius: tempMaxCelsius ?? this.tempMaxCelsius,
       mutedSflProducts: mutedSflProducts ?? this.mutedSflProducts,
       mutedDeliveryProducts:
           mutedDeliveryProducts ?? this.mutedDeliveryProducts,
+      mutedFlowTempProducts:
+          mutedFlowTempProducts ?? this.mutedFlowTempProducts,
       mutedConsoles: mutedConsoles ?? this.mutedConsoles,
       languageCode: languageCode ?? this.languageCode,
       themeMode: themeMode ?? this.themeMode,

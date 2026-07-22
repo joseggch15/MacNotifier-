@@ -43,8 +43,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late double _varianceThresholdPct;
   late bool _monitorOverfill;
   late bool _monitorUnauthorised;
+  late bool _monitorFlowTemp;
+  late double _flowMinLpm;
+  late double _flowMaxLpm;
+  late double _tempMaxCelsius;
   late Set<String> _mutedSfl;
   late Set<String> _mutedDeliveries;
+  late Set<String> _mutedFlowTemp;
   late Set<String> _mutedConsoles;
   late List<String> _knownProducts;
   late List<String> _knownConsoles;
@@ -53,6 +58,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   bool _tokenVisible = false;
   bool _testing = false;
+  bool _probing = false;
 
   @override
   void initState() {
@@ -73,8 +79,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _varianceThresholdPct = s.varianceThresholdPct;
     _monitorOverfill = s.monitorOverfill;
     _monitorUnauthorised = s.monitorUnauthorised;
+    _monitorFlowTemp = s.monitorFlowTemp;
+    _flowMinLpm = s.flowMinLpm;
+    _flowMaxLpm = s.flowMaxLpm;
+    _tempMaxCelsius = s.tempMaxCelsius;
     _mutedSfl = s.mutedSflProducts.toSet();
     _mutedDeliveries = s.mutedDeliveryProducts.toSet();
+    _mutedFlowTemp = s.mutedFlowTempProducts.toSet();
     _mutedConsoles = s.mutedConsoles.toSet();
     _languageCode = s.languageCode;
     _themeMode = s.themeMode;
@@ -85,6 +96,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       ...store.knownProducts,
       ..._mutedSfl,
       ..._mutedDeliveries,
+      ..._mutedFlowTemp,
     }.toList()
       ..sort();
     // Consolas del ultimo snapshot + las ya silenciadas.
@@ -138,8 +150,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         monitorOverfill: _monitorOverfill,
         monitorUnauthorised: _monitorUnauthorised,
         unauthorisedLanes: _parseLanes(),
+        monitorFlowTemp: _monitorFlowTemp,
+        flowMinLpm: _flowMinLpm,
+        flowMaxLpm: _flowMaxLpm,
+        tempMaxCelsius: _tempMaxCelsius,
         mutedSflProducts: _mutedSfl.toList()..sort(),
         mutedDeliveryProducts: _mutedDeliveries.toList()..sort(),
+        mutedFlowTempProducts: _mutedFlowTemp.toList()..sort(),
         mutedConsoles: _mutedConsoles.toList()..sort(),
         languageCode: _languageCode,
         themeMode: _themeMode,
@@ -194,6 +211,55 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     } finally {
       client.close();
       if (mounted) setState(() => _testing = false);
+    }
+  }
+
+  /// DIAGNOSTICO: introspecciona el tipo de movimiento del tenant y muestra
+  /// que campos de caudal/temperatura expone — para verificar viabilidad antes
+  /// de activar esas alertas. Usa lo que hay EN EL FORMULARIO (sin guardar).
+  Future<void> _probeMovementFields() async {
+    final l = _l;
+    setState(() => _probing = true);
+    final client = AdaptIQClient(_fromForm());
+    try {
+      final probe = await client.probeMovementFields();
+      if (!mounted) return;
+      String fieldLabel(String f) => switch (f) {
+            'peakFlowRate' => l.t('peakFlowRate — caudal pico', 'peakFlowRate — peak flow'),
+            'averageFlowRate' =>
+              l.t('averageFlowRate — caudal promedio', 'averageFlowRate — avg flow'),
+            'duration' => l.t('duration — duracion (s)', 'duration — duration (s)'),
+            'transactionTemperature' => l.t(
+                'transactionTemperature — temperatura', 'transactionTemperature — temperature'),
+            _ => f,
+          };
+      final lines = [
+        for (final f in probe.present) '✅ ${fieldLabel(f)}',
+        for (final f in probe.missing) '❌ ${fieldLabel(f)}',
+      ].join('\n');
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(l.t('Campos de caudal/temp — tipo ${probe.typeName}',
+              'Flow/temp fields — type ${probe.typeName}')),
+          content: Text(
+            '${l.t('Campos visibles en el tipo: ${probe.totalFields}', 'Fields on type: ${probe.totalFields}')}\n\n$lines',
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: Text(l.t('Cerrar', 'Close'))),
+          ],
+        ),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l.t('Fallo el diagnostico: $e', 'Probe failed: $e'))),
+      );
+    } finally {
+      client.close();
+      if (mounted) setState(() => _probing = false);
     }
   }
 
@@ -315,6 +381,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.wifi_tethering),
               label: Text(l.t('Probar conexion', 'Test connection')),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _probing ? null : _probeMovementFields,
+              icon: _probing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.science_outlined),
+              label: Text(l.t('Diagnostico caudal/temperatura',
+                  'Probe flow/temperature')),
             ),
             const Divider(height: 32),
             // ---- Cadencias ------------------------------------------------------
@@ -511,6 +589,98 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 onChanged: (p, mute) => setState(
                     () => mute ? _mutedSfl.add(p) : _mutedSfl.remove(p)),
               ),
+            const Divider(height: 32),
+            // ---- Caudal y temperatura -------------------------------------------
+            Text(l.t('Caudal y temperatura', 'Flow rate and temperature'),
+                style: Theme.of(context).textTheme.titleMedium),
+            SwitchListTile(
+              title: Text(l.t('Monitorear caudal y temperatura',
+                  'Monitor flow rate and temperature')),
+              subtitle: Text(l.t(
+                  'Cruza volumen y duracion (caudal L/min) y vigila la '
+                      'temperatura: caudal bajo = obstruccion, alto = medidor en '
+                      'vacio/bypass, temperatura extrema = sensor averiado',
+                  'Crosses volume and duration (flow L/min) and watches '
+                      'temperature: low flow = obstruction, high = meter '
+                      'spinning/bypass, extreme temp = faulty sensor')),
+              value: _monitorFlowTemp,
+              onChanged: (v) => setState(() => _monitorFlowTemp = v),
+            ),
+            if (_monitorFlowTemp) ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<double>(
+                value: _flowMinLpm,
+                decoration: InputDecoration(
+                  labelText: l.t('Caudal minimo (obstruccion)',
+                      'Minimum flow (obstruction)'),
+                  helperText: l.t(
+                      'Por debajo de este caudal medio se alerta obstruccion.',
+                      'Below this average flow an obstruction is alerted.'),
+                  border: const OutlineInputBorder(),
+                ),
+                items: [
+                  for (final v in const [5.0, 10.0, 15.0, 25.0])
+                    DropdownMenuItem(value: v, child: Text('${v.toStringAsFixed(0)} L/min')),
+                ],
+                onChanged: (v) =>
+                    setState(() => _flowMinLpm = v ?? kDefaultFlowMinLpm),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<double>(
+                value: _flowMaxLpm,
+                decoration: InputDecoration(
+                  labelText: l.t('Caudal maximo (vacio/bypass)',
+                      'Maximum flow (air/bypass)'),
+                  helperText: l.t(
+                      'Por encima sugiere medidor girando en vacio (bypass).',
+                      'Above this suggests the meter spinning in air (bypass).'),
+                  border: const OutlineInputBorder(),
+                ),
+                items: [
+                  for (final v in const [120.0, 150.0, 180.0, 220.0])
+                    DropdownMenuItem(value: v, child: Text('${v.toStringAsFixed(0)} L/min')),
+                ],
+                onChanged: (v) =>
+                    setState(() => _flowMaxLpm = v ?? kDefaultFlowMaxLpm),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<double>(
+                value: _tempMaxCelsius,
+                decoration: InputDecoration(
+                  labelText: l.t('Temperatura maxima', 'Maximum temperature'),
+                  helperText: l.t(
+                      'Por encima se alerta posible sensor termico averiado.',
+                      'Above this a possible faulty thermal sensor is alerted.'),
+                  border: const OutlineInputBorder(),
+                ),
+                items: [
+                  for (final v in const [45.0, 50.0, 60.0, 70.0])
+                    DropdownMenuItem(value: v, child: Text('${v.toStringAsFixed(0)} °C')),
+                ],
+                onChanged: (v) =>
+                    setState(() => _tempMaxCelsius = v ?? kDefaultTempMaxCelsius),
+              ),
+              const SizedBox(height: 4),
+              _MuteChipList(
+                title: l.t('Silenciar caudal/temp por producto',
+                    'Mute flow/temp by product'),
+                subtitle: l.t(
+                    'Los productos marcados NO notifican anomalias de caudal '
+                        'ni temperatura.',
+                    'Marked products do NOT notify flow or temperature '
+                        'anomalies.'),
+                emptyText: l.t(
+                    'Aun no hay productos detectados: apareceran cuando el '
+                        'monitor sincronice datos.',
+                    'No products detected yet: they will appear once the '
+                        'monitor syncs data.'),
+                items: _knownProducts,
+                muted: _mutedFlowTemp,
+                onChanged: (p, mute) => setState(() => mute
+                    ? _mutedFlowTemp.add(p)
+                    : _mutedFlowTemp.remove(p)),
+              ),
+            ],
             const Divider(height: 32),
             // ---- Despachos sin ID (no autorizados) ------------------------------
             Text(l.t('Despachos sin ID (no autorizados)',

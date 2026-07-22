@@ -21,6 +21,7 @@ import 'package:intl/intl.dart';
 
 import '../config/app_settings.dart';
 import '../core/delivery_check.dart';
+import '../core/flow_temp_check.dart';
 import '../core/health_check.dart';
 import '../core/sfl_check.dart';
 import '../core/unauthorised_check.dart';
@@ -42,6 +43,7 @@ class NotificationService {
   static const int _deliverySummaryNotificationId = 0x00DE11;
   static const int _overfillSummaryNotificationId = 0x005F1;
   static const int _unauthorisedSummaryNotificationId = 0x00A17;
+  static const int _flowTempSummaryNotificationId = 0x00F107;
 
   static bool get _supported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
@@ -334,6 +336,82 @@ class NotificationService {
         channel: o.isCritical ? _Channel.critical : _Channel.warning,
       );
     }
+  }
+
+  /// Publica las anomalias de caudal/temperatura nuevas del ciclo (eventos
+  /// one-shot: el despacho ya ocurrio, no hay "recuperacion"). Un caudal alto o
+  /// una temperatura alta son criticos (fraude/sensor roto); un caudal bajo,
+  /// advertencia (obstruccion).
+  Future<void> showFlowTempEvents(
+      List<FlowTempAlert> alerts, AppSettings settings) async {
+    if (!_supported || alerts.isEmpty) return;
+    await init();
+    final l = L10n(settings.languageCode);
+
+    if (alerts.length > maxIndividual) {
+      final lines = [
+        for (final a in alerts)
+          '${a.lane ?? a.equipmentId ?? a.dispenseId} — '
+              '${_flowTempConditionLabel(a.conditions, a, l)}',
+      ];
+      await _show(
+        id: _flowTempSummaryNotificationId,
+        title: l.t('🌡️ ${alerts.length} anomalias de caudal/temperatura',
+            '🌡️ ${alerts.length} flow/temperature anomalies'),
+        body: lines.join(' · '),
+        channel: _Channel.critical,
+        inboxLines: lines,
+      );
+      return;
+    }
+    for (final a in alerts) {
+      await _show(
+        id: stableId('flowtemp/${a.dispenseId}'),
+        title: _flowTempTitle(a, l),
+        body: _flowTempBody(a, l),
+        channel: a.isCritical ? _Channel.critical : _Channel.warning,
+      );
+    }
+  }
+
+  String _flowTempTitle(FlowTempAlert a, L10n l) {
+    final icon = a.isCritical ? '🔴' : '🟠';
+    final where = a.lane ?? a.equipmentId ?? a.dispenseId;
+    return l.t('$icon ${_flowTempConditionLabel(a.conditions, a, l)} — $where',
+        '$icon ${_flowTempConditionLabel(a.conditions, a, l)} — $where');
+  }
+
+  String _flowTempBody(FlowTempAlert a, L10n l) => [
+        if (a.flowLpm != null)
+          '${l.t('Caudal', 'Flow')} ${_litres.format(a.flowLpm)} L/min',
+        if (a.peakFlowRate != null)
+          '${l.t('pico', 'peak')} ${_litres.format(a.peakFlowRate)} L/min',
+        if (a.temperatureC != null)
+          '${a.temperatureC!.toStringAsFixed(1)} °C',
+        if (a.volume != null) '${_litres.format(a.volume)} L',
+        if ((a.product ?? '').isNotEmpty) a.product!,
+        if ((a.fieldUser ?? '').isNotEmpty)
+          '${l.t('Operador', 'Operator')}: ${a.fieldUser}',
+        if (a.collectedAt != null)
+          DateFormat('dd/MM HH:mm').format(a.collectedAt!.toLocal()),
+      ].join(' · ');
+
+  /// Etiqueta corta de la(s) anomalia(s) de una transaccion (la mas severa
+  /// manda en el resumen). Caudal alto = medidor en vacio/bypass; bajo =
+  /// obstruccion; temperatura fuera de rango = sensor averiado.
+  String _flowTempConditionLabel(
+      Set<FlowTempCondition> conditions, FlowTempAlert a, L10n l) {
+    final parts = <String>[
+      if (conditions.contains(FlowTempCondition.highFlow))
+        l.t('caudal alto', 'high flow'),
+      if (conditions.contains(FlowTempCondition.lowFlow))
+        l.t('caudal bajo', 'low flow'),
+      if (conditions.contains(FlowTempCondition.highTemp))
+        l.t('temp. alta', 'high temp'),
+      if (conditions.contains(FlowTempCondition.lowTemp))
+        l.t('temp. baja', 'low temp'),
+    ];
+    return parts.join(' + ');
   }
 
   /// Notificacion de prueba desde la pantalla de configuracion.
