@@ -25,6 +25,7 @@ import '../core/util.dart';
 import '../i18n/l10n.dart';
 import '../models/adapt_mac.dart';
 import '../models/delivery.dart';
+import '../msgq/ui/msgq_home_screen.dart';
 import '../notifications/notification_service.dart';
 import '../state/providers.dart';
 import 'reports_screen.dart';
@@ -67,6 +68,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               icon: const Icon(Icons.refresh),
               onPressed: () =>
                   ref.read(consolesProvider.notifier).refreshNow(),
+            ),
+            IconButton(
+              tooltip: l.t('Analitica MSGQ', 'MSGQ analytics'),
+              icon: const Icon(Icons.insights_outlined),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const MsgqHomeScreen()),
+              ),
             ),
             IconButton(
               tooltip: l.t('Reportes', 'Reports'),

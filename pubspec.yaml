@@ -53,6 +53,15 @@ dependencies:
   path_provider: ^2.1.4
   share_plus: ^10.1.0
 
+  # Replica local en SQLite para los modulos MSGQ (lib/src/msgq/). La analitica
+  # de tanques y flota NO se puede calcular sobre un snapshot: necesita
+  # historico consultable (burn rate, reconciliacion, transiciones de estado).
+  # `sqflite` cubre Android/iOS/macOS; `sqflite_common_ffi` anade Windows/Linux,
+  # donde tambien se compila esta app.
+  sqflite: ^2.3.3
+  sqflite_common_ffi: ^2.3.3
+  path: ^1.9.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

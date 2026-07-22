@@ -122,6 +122,38 @@ class AdaptIQClient {
 
   void close() => _http.close();
 
+  // -- acceso de bajo nivel (modulos MSGQ) -----------------------------------
+  // Los modulos portados de MSGQ (`src/msgq/`) consultan conexiones que el
+  // notificador no usa (tanques, reconciliaciones, log de auditoria). En vez de
+  // duplicar transporte, throttling y reintentos en un segundo cliente, se
+  // expone el motor ya probado. Son envoltorios: NO cambian comportamiento.
+
+  /// Ejecuta un documento GraphQL arbitrario con el throttling y los reintentos
+  /// del cliente. Para queries TOP-LEVEL (p. ej. `changes`), que no cuelgan del
+  /// site.
+  Future<Map<String, dynamic>> execute(
+    String query, [
+    Map<String, dynamic> variables = const {},
+  ]) =>
+      _execute(query, variables);
+
+  /// Pagina por cursor una conexion que cuelga de `site(id:)`.
+  Future<List<Map<String, dynamic>>> paginateSiteConnection(
+    String query,
+    String connection,
+    Map<String, dynamic> variables, {
+    void Function(int pages, int records)? onPage,
+    bool Function()? isCancelled,
+  }) =>
+      _paginateSiteConnection(query, connection, variables,
+          onPage: onPage, isCancelled: isCancelled);
+
+  /// Site id configurado o autodescubierto (cacheado tras la primera llamada).
+  Future<String> resolveSiteId() => _resolveSiteId();
+
+  /// Nombre de la conexion de equipos del tenant; `''` si no expone ninguna.
+  Future<String> discoverEquipmentField() => _discoverEquipmentField();
+
   // -- contrato publico ------------------------------------------------------
 
   /// Lista los sitios visibles para el token (tambien sirve de "probar conexion").
