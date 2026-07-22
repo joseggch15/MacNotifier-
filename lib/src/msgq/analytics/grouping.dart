@@ -13,6 +13,7 @@
 /// Dart puro: sin dependencias de UI, testeable sin emulador.
 library;
 
+import '../domain/fms_vocabulary.dart';
 import '../domain/node_parsing.dart';
 
 /// Datos de entrada invalidos para un calculo (p. ej. un `topN` no positivo).
@@ -142,4 +143,57 @@ List<T> takeTop<T>(List<T> items, int n) {
     throw AnalyticsException('El tope de filas debe ser positivo (recibido: $n).');
   }
   return List.unmodifiable(items.take(n));
+}
+
+// ===========================================================================
+// Estadistica robusta
+// ===========================================================================
+// Las auditorias de burn rate y de hardware resumen SIEMPRE con mediana y MAD,
+// nunca con media y desviacion tipica. La razon no es estilistica: la media y la
+// sigma clasica las arrastra el propio outlier que se quiere detectar, asi que
+// un equipo con una fuga elevaria la linea base de su categoria hasta dejar de
+// parecer anomalo. La mediana no se mueve.
+
+/// Mediana de una muestra. `null` si esta vacia.
+double? median(Iterable<double> values) {
+  final sorted = values.where((v) => v.isFinite).toList()..sort();
+  if (sorted.isEmpty) return null;
+  final mid = sorted.length ~/ 2;
+  return sorted.length.isOdd
+      ? sorted[mid]
+      : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/// Desviacion absoluta mediana: la mediana de |x - mediana(x)|.
+double? medianAbsoluteDeviation(Iterable<double> values, {double? center}) {
+  final list = values.where((v) => v.isFinite).toList();
+  if (list.isEmpty) return null;
+  final c = center ?? median(list)!;
+  return median(list.map((v) => (v - c).abs()));
+}
+
+/// Sigma robusto = MAD escalado. `0` cuando la muestra es degenerada (todos los
+/// valores identicos); el llamador debe tratar ese caso aparte, porque dividir
+/// por el daria un z infinito.
+double robustSigma(Iterable<double> values, {double? center}) {
+  final mad = medianAbsoluteDeviation(values, center: center);
+  return mad == null ? 0 : madToSigma * mad;
+}
+
+/// Direccion de una desviacion respecto a su referencia.
+enum Deviation {
+  high('Alto'),
+  low('Bajo'),
+  none('');
+
+  const Deviation(this.label);
+
+  final String label;
+
+  /// 'Alto' si supera la referencia, 'Bajo' si queda por debajo, ninguna si no
+  /// hay con que comparar.
+  static Deviation of(double? delta) {
+    if (delta == null || !delta.isFinite || delta == 0) return Deviation.none;
+    return delta > 0 ? Deviation.high : Deviation.low;
+  }
 }

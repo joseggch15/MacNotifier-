@@ -178,6 +178,9 @@ class MsgqSyncService {
                 .map((e) => e.toJson()),
           );
           equipment = master.equipment.length;
+          // Observa las asignaciones de tag vigentes ANTES de que cambien: es
+          // la unica forma de saber luego de quien era un tag ya removido.
+          await replica.recordRfidAssignments(master.equipment);
         }
         if (master.limits.isNotEmpty) {
           await replica.replaceAll(ReplicaTable.consumptionLimits,
@@ -269,6 +272,8 @@ class MsgqDataset {
     required this.tanks,
     required this.reconciliations,
     required this.changes,
+    this.limits = const [],
+    this.rfidHistory = const [],
     required this.loadedAt,
     this.lastSyncedAt,
   });
@@ -278,6 +283,13 @@ class MsgqDataset {
   final List<Tank> tanks;
   final List<Reconciliation> reconciliations;
   final List<ChangeEvent> changes;
+
+  /// Safe Fill Levels por equipo y producto (fuente primaria del producto
+  /// asignado en el reporte de RFID).
+  final List<ConsumptionLimit> limits;
+
+  /// Historial observado de tag -> equipo.
+  final List<RfidAssignment> rfidHistory;
 
   /// Momento en que se leyo la replica.
   final DateTime loadedAt;

@@ -13,9 +13,13 @@ import '../../i18n/l10n.dart';
 import '../../state/providers.dart';
 import '../data/replica_database.dart';
 import '../state/msgq_providers.dart';
+import 'burn_rate_screen.dart';
 import 'equipment_screen.dart';
+import 'hardware_screen.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
+import 'rfid_screen.dart';
+import 'tag_hopping_screen.dart';
 import 'tank_screen.dart';
 
 class MsgqHomeScreen extends ConsumerWidget {
@@ -81,6 +85,50 @@ class MsgqHomeScreen extends ConsumerWidget {
                   ),
                   onTap: () => _open(context, const EquipmentScreen()),
                 ),
+                _ModuleTile(
+                  icon: Icons.speed_outlined,
+                  title: l.t('Burn Rate', 'Burn rate'),
+                  subtitle: l.t(
+                    'Consumo L/h por equipo contra la linea base de su '
+                        'categoria, e intervalos atipicos',
+                    'L/h consumption per equipment against its category '
+                        'baseline, plus atypical intervals',
+                  ),
+                  onTap: () => _open(context, const BurnRateScreen()),
+                ),
+                _ModuleTile(
+                  icon: Icons.build_outlined,
+                  title: l.t('Salud de hardware', 'Hardware health'),
+                  subtitle: l.t(
+                    'SMU en regresion o sin pulsos, re-tagueo sospechoso y '
+                        'caudal de medidores degradado',
+                    'SMU regressions and stalls, suspicious re-tagging and '
+                        'degraded meter flow',
+                  ),
+                  onTap: () => _open(context, const HardwareScreen()),
+                ),
+                _ModuleTile(
+                  icon: Icons.nfc_outlined,
+                  title: l.t('Inventario RFID', 'RFID inventory'),
+                  subtitle: l.t(
+                    'Altas, reemplazos y remociones de tag con su fecha real, '
+                        'y las validaciones del inventario',
+                    'Tag installs, replacements and removals with their real '
+                        'date, plus inventory validations',
+                  ),
+                  onTap: () => _open(context, const RfidScreen()),
+                ),
+                _ModuleTile(
+                  icon: Icons.gpp_bad_outlined,
+                  title: l.t('Tag hopping', 'Tag hopping'),
+                  subtitle: l.t(
+                    'El mismo tag en dos puntos de despacho en un lapso '
+                        'fisicamente imposible',
+                    'The same tag at two dispensing points within a physically '
+                        'impossible window',
+                  ),
+                  onTap: () => _open(context, const TagHoppingScreen()),
+                ),
                 const Divider(height: 24),
                 _ReplicaPanel(counts: counts, dataset: dataset),
               ],
@@ -142,6 +190,7 @@ class _ReplicaPanel extends StatelessWidget {
       ReplicaTable.reconciliations: 'Reconciliaciones',
       ReplicaTable.changeEvents: 'Eventos de auditoria',
       ReplicaTable.consumptionLimits: 'Limites SFL',
+      ReplicaTable.rfidHistory: 'Asignaciones RFID observadas',
     };
     return MsgqSection(
       title: 'Replica local',

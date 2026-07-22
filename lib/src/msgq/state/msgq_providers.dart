@@ -21,8 +21,12 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/providers.dart';
+import '../analytics/burn_rate.dart';
 import '../analytics/equipment_analytics.dart';
 import '../analytics/grouping.dart';
+import '../analytics/hardware_health.dart';
+import '../analytics/rfid_inventory.dart';
+import '../analytics/tag_hopping.dart';
 import '../analytics/tank_analytics.dart';
 import '../data/msgq_sync_service.dart';
 import '../data/replica_database.dart';
@@ -107,6 +111,8 @@ class MsgqDatasetController extends AsyncNotifier<MsgqDataset> {
       tanks: await replica.tanksAll(),
       reconciliations: await replica.reconciliations(from: from),
       changes: await replica.changeEvents(from: from),
+      limits: await replica.consumptionLimits(),
+      rfidHistory: await replica.rfidHistory(),
       loadedAt: DateTime.now().toUtc(),
       lastSyncedAt: await replica.lastSyncedAt(ReplicaTable.movements),
     );
@@ -218,6 +224,72 @@ final equipmentAnalyticsProvider = Provider<EquipmentAnalytics?>((ref) {
 final statusTransitionsProvider = Provider<List<StatusTransition>>((ref) {
   final analytics = ref.watch(equipmentAnalyticsProvider);
   return analytics?.statusTransitions() ?? const [];
+});
+
+/// Producto seleccionado en Burn Rate (`null` = todos agregados).
+final burnRateProductProvider = StateProvider<String?>((_) => null);
+
+/// Auditoria de burn rate.
+///
+/// Se calcula en DOS pasos a proposito: [_burnRateBaseProvider] hace la pasada
+/// cara (encadenar los intervalos) y solo depende del dataset; cambiar de
+/// producto re-proyecta el resultado ya calculado en memoria. Sin esa
+/// separacion, tocar el desplegable de producto recorreria de nuevo todos los
+/// movimientos.
+final _burnRateBaseProvider = Provider<BurnRateAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  return BurnRateAudit.run(
+    movements: dataset.movements,
+    equipment: dataset.equipment,
+  );
+});
+
+final burnRateProvider = Provider<BurnRateAudit?>((ref) {
+  final base = ref.watch(_burnRateBaseProvider);
+  if (base == null) return null;
+  final product = ref.watch(burnRateProductProvider);
+  return product == base.product ? base : base.forProduct(product);
+});
+
+/// Auditoria de salud de hardware y sensores.
+final hardwareHealthProvider = Provider<HardwareAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  return HardwareAudit.run(
+    movements: dataset.movements,
+    equipment: dataset.equipment,
+    changes: dataset.changes,
+  );
+});
+
+/// Reporte de inventario de tags RFID, acotado al rango seleccionado.
+///
+/// El rango se pasa como fechas LOCALES del sitio, igual que en el escritorio:
+/// el log guarda UTC y una instalacion nocturna caeria en el dia siguiente.
+final rfidInventoryProvider = Provider<RfidInventoryAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  final range = ref.watch(msgqRangeProvider);
+  return RfidInventoryAudit.run(
+    changes: dataset.changes,
+    equipment: dataset.equipment,
+    movements: dataset.movements,
+    limits: dataset.limits,
+    history: dataset.rfidHistory,
+    from: range.start().add(const Duration(hours: siteUtcOffsetHours)),
+    tzOffsetHours: siteUtcOffsetHours,
+  );
+});
+
+/// Auditoria de tag hopping.
+final tagHoppingProvider = Provider<TagHopAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  return TagHopAudit.run(
+    movements: dataset.movements,
+    equipment: dataset.equipment,
+  );
 });
 
 /// Filas por tabla de la replica (panel de diagnostico).

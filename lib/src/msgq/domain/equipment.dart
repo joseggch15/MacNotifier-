@@ -299,3 +299,74 @@ class ConsumptionLimit {
 /// Clave de cruce equipo+producto, normalizada igual que en MSGQ (`_norm`).
 String limitKey(String? equipmentId, String? product) =>
     '${equipmentId?.trim() ?? ''}|${product?.trim().toUpperCase() ?? ''}';
+
+/// Asignacion observada de un tag RFID a un equipo — port de
+/// `RFID_HISTORY_COLS` / `transform.rfid_assignments_df`.
+///
+/// La API NO expone el vinculo historico entre un tag y su equipo: el log de
+/// RFID no trae el equipo, y `rfidTags` es solo el estado actual. El historial
+/// se RECONSTRUYE observando el maestro: cada vez que se replica, los pares
+/// (tag, equipo) vigentes se registran con su `lastSeen`. Un tag que se remueve
+/// deja de reinsertarse y su `lastSeen` queda congelado — que es justo lo que
+/// permite responder "de quien era este tag" cuando ya no esta en nadie.
+class RfidAssignment {
+  const RfidAssignment({
+    required this.tag,
+    this.equipmentId,
+    this.internalId,
+    this.firstSeen,
+    this.lastSeen,
+  });
+
+  /// Tag en MAYUSCULAS (la clave; los tags se comparan sin distinguir caja).
+  final String tag;
+
+  final String? equipmentId;
+  final String? internalId;
+
+  /// Primera observacion del par (se preserva entre refrescos).
+  final DateTime? firstSeen;
+
+  /// Ultima observacion. Congelado = el tag ya no esta asignado.
+  final DateTime? lastSeen;
+
+  /// Aplana el maestro a una fila por (tag, equipo) observado en [seenAt].
+  static List<RfidAssignment> fromEquipment(
+    Iterable<Equipment> equipment, {
+    required DateTime seenAt,
+    Map<String, DateTime> knownFirstSeen = const {},
+  }) {
+    final out = <RfidAssignment>[];
+    final seen = <String>{};
+    for (final e in equipment) {
+      for (final tag in e.rfidTags) {
+        final key = tag.toUpperCase();
+        if (!seen.add(key)) continue; // un tag no puede estar en dos equipos
+        out.add(RfidAssignment(
+          tag: key,
+          equipmentId: e.equipmentId,
+          internalId: e.internalId,
+          firstSeen: knownFirstSeen[key] ?? seenAt,
+          lastSeen: seenAt,
+        ));
+      }
+    }
+    return out;
+  }
+
+  factory RfidAssignment.fromJson(Map<String, dynamic> json) => RfidAssignment(
+        tag: (json['tag'] ?? '').toString(),
+        equipmentId: asText(json['equipment_id']),
+        internalId: asText(json['internal_id']),
+        firstSeen: asDate(json['first_seen']),
+        lastSeen: asDate(json['last_seen']),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'tag': tag,
+        'equipment_id': equipmentId,
+        'internal_id': internalId,
+        'first_seen': isoOrNull(firstSeen),
+        'last_seen': isoOrNull(lastSeen),
+      };
+}

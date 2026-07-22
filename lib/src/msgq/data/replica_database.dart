@@ -44,6 +44,7 @@ class ReplicaTable {
   static const reconciliations = 'reconciliations';
   static const changeEvents = 'change_events';
   static const consumptionLimits = 'consumption_limits';
+  static const rfidHistory = 'rfid_history';
 
   static const all = [
     movements,
@@ -52,6 +53,7 @@ class ReplicaTable {
     reconciliations,
     changeEvents,
     consumptionLimits,
+    rfidHistory,
   ];
 }
 
@@ -70,7 +72,9 @@ class ReplicaDatabase {
 
   final Database _db;
 
-  static const _schemaVersion = 1;
+  /// v2 añadio `rfid_history` (el historial observado de tag -> equipo, sin el
+  /// cual las REMOCIONES de tag no se pueden atribuir a ningun equipo).
+  static const _schemaVersion = 2;
   static const _defaultFileName = 'msgq_replica.sqlite3';
 
   /// Abre (y crea si hace falta) la replica.
@@ -92,6 +96,7 @@ class ReplicaDatabase {
           version: _schemaVersion,
           onConfigure: (db) => db.execute('PRAGMA foreign_keys = OFF'),
           onCreate: (db, _) => _createSchema(db),
+          onUpgrade: _upgradeSchema,
         ),
       );
       return ReplicaDatabase._(db);
@@ -188,12 +193,37 @@ class ReplicaDatabase {
         "product" TEXT, "product_code" TEXT, "sfl" REAL
       )''');
 
+    _createRfidHistory(batch);
+
     // Watermark por entidad: el `updatedAt` mas alto ya replicado.
     batch.execute('''
       CREATE TABLE sync_state (
         "entity" TEXT PRIMARY KEY, "watermark" TEXT, "synced_at" TEXT
       )''');
     await batch.commit(noResult: true);
+  }
+
+  /// Historial OBSERVADO de asignaciones tag -> equipo.
+  ///
+  /// No lo entrega la API: se acumula comparando el maestro en el tiempo. Es lo
+  /// unico que permite atribuir una REMOCION de tag a su equipo, porque para
+  /// entonces el tag ya no figura en ningun `rfidTags`.
+  static void _createRfidHistory(Batch batch) {
+    batch.execute('''
+      CREATE TABLE rfid_history (
+        "tag" TEXT PRIMARY KEY, "equipment_id" TEXT, "internal_id" TEXT,
+        "first_seen" TEXT, "last_seen" TEXT
+      )''');
+    batch.execute(
+        'CREATE INDEX idx_rfid_history_equipment ON rfid_history("equipment_id")');
+  }
+
+  static Future<void> _upgradeSchema(Database db, int from, int to) async {
+    if (from < 2) {
+      final batch = db.batch();
+      _createRfidHistory(batch);
+      await batch.commit(noResult: true);
+    }
   }
 
   // =========================================================================
@@ -250,6 +280,28 @@ class ReplicaDatabase {
 
   Future<int> upsertConsumptionLimits(Iterable<ConsumptionLimit> items) =>
       upsertAll(ReplicaTable.consumptionLimits, items.map((l) => l.toJson()));
+
+  /// Registra las asignaciones de tag vigentes, preservando el `firstSeen` ya
+  /// observado.
+  ///
+  /// Es un UPSERT y nunca un reemplazo: los tags que dejan de estar asignados
+  /// deben QUEDARSE con su `lastSeen` congelado. Borrarlos destruiria justo la
+  /// informacion que hace falta para atribuir su remocion.
+  Future<int> recordRfidAssignments(
+    Iterable<Equipment> equipment, {
+    DateTime? seenAt,
+  }) async {
+    final known = {
+      for (final a in await rfidHistory())
+        if (a.firstSeen != null) a.tag: a.firstSeen!,
+    };
+    final rows = RfidAssignment.fromEquipment(
+      equipment,
+      seenAt: seenAt ?? DateTime.now().toUtc(),
+      knownFirstSeen: known,
+    );
+    return upsertAll(ReplicaTable.rfidHistory, rows.map((a) => a.toJson()));
+  }
 
   /// Reemplaza por completo una tabla de CATALOGO (tanques, equipos, limites).
   ///
@@ -391,6 +443,11 @@ class ReplicaDatabase {
   Future<List<ConsumptionLimit>> consumptionLimits() async {
     final rows = await _db.query(ReplicaTable.consumptionLimits);
     return rows.map(ConsumptionLimit.fromJson).toList(growable: false);
+  }
+
+  Future<List<RfidAssignment>> rfidHistory() async {
+    final rows = await _db.query(ReplicaTable.rfidHistory);
+    return rows.map(RfidAssignment.fromJson).toList(growable: false);
   }
 
   /// Filas por tabla (para el panel de diagnostico: "cuanto tengo replicado").
