@@ -10,7 +10,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../analytics/tag_hopping.dart';
 import '../domain/fms_vocabulary.dart';
+import '../export/msgq_export_service.dart';
 import '../state/msgq_providers.dart';
+import 'msgq_export_button.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -35,6 +37,11 @@ class _TagHoppingScreenState extends ConsumerState<TagHoppingScreen> {
       appBar: AppBar(
         title: const Text('Tag hopping'),
         actions: [
+          MsgqExportButton(
+            reportBuilder: () => audit == null
+                ? null
+                : buildTagHoppingReport(audit, scope: msgqScopeLabel(ref)),
+          ),
           IconButton(
             tooltip: 'Sincronizar',
             icon: const Icon(Icons.sync),

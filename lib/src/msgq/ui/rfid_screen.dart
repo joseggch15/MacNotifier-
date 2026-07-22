@@ -12,7 +12,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../analytics/rfid_inventory.dart';
 import '../domain/fms_vocabulary.dart';
+import '../export/msgq_export_service.dart';
 import '../state/msgq_providers.dart';
+import 'msgq_export_button.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -31,6 +33,11 @@ class RfidScreen extends ConsumerWidget {
         appBar: AppBar(
           title: const Text('Inventario RFID'),
           actions: [
+            MsgqExportButton(
+              reportBuilder: () => audit == null
+                  ? null
+                  : buildRfidReport(audit, scope: msgqScopeLabel(ref)),
+            ),
             IconButton(
               tooltip: 'Sincronizar',
               icon: const Icon(Icons.sync),

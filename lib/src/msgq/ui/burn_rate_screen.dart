@@ -15,8 +15,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../analytics/burn_rate.dart';
+import '../export/msgq_export_service.dart';
 import '../state/msgq_providers.dart';
 import 'msgq_charts.dart';
+import 'msgq_export_button.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -35,6 +37,17 @@ class BurnRateScreen extends ConsumerWidget {
         appBar: AppBar(
           title: const Text('Burn Rate'),
           actions: [
+            MsgqExportButton(
+              reportBuilder: () => audit == null
+                  ? null
+                  : buildBurnRateReport(
+                      audit,
+                      scope: msgqScopeLabel(ref),
+                      coverage: audit.coverage(
+                          ref.read(msgqRangeProvider).start(),
+                          DateTime.now().toUtc()),
+                    ),
+            ),
             IconButton(
               tooltip: 'Sincronizar',
               icon: const Icon(Icons.sync),

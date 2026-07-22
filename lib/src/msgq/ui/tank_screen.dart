@@ -17,8 +17,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../analytics/grouping.dart';
 import '../analytics/tank_analytics.dart';
 import '../domain/fms_vocabulary.dart';
+import '../export/msgq_export_service.dart';
 import '../state/msgq_providers.dart';
 import 'msgq_charts.dart';
+import 'msgq_export_button.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -37,6 +39,11 @@ class TankScreen extends ConsumerWidget {
         appBar: AppBar(
           title: const Text('Tanques y consumo'),
           actions: [
+            MsgqExportButton(
+              reportBuilder: () => analytics == null
+                  ? null
+                  : buildTankReport(analytics, scope: msgqScopeLabel(ref)),
+            ),
             IconButton(
               tooltip: 'Sincronizar',
               icon: const Icon(Icons.sync),

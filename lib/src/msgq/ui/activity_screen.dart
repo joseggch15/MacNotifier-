@@ -13,7 +13,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../analytics/activity_audit.dart';
 import '../analytics/product_audit.dart';
+import '../export/msgq_export_service.dart';
 import '../state/msgq_providers.dart';
+import 'msgq_export_button.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -33,6 +35,12 @@ class ActivityScreen extends ConsumerWidget {
         appBar: AppBar(
           title: const Text('Actividad'),
           actions: [
+            MsgqExportButton(
+              reportBuilder: () => (activity == null || product == null)
+                  ? null
+                  : buildActivityReport(activity, product,
+                      scope: msgqScopeLabel(ref)),
+            ),
             IconButton(
               tooltip: 'Sincronizar',
               icon: const Icon(Icons.sync),

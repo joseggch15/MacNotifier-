@@ -14,7 +14,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../analytics/equipment_analytics.dart';
 import '../analytics/grouping.dart';
 import '../domain/fms_vocabulary.dart';
+import '../export/msgq_export_service.dart';
 import '../state/msgq_providers.dart';
+import 'msgq_export_button.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 
@@ -33,6 +35,15 @@ class EquipmentScreen extends ConsumerWidget {
         appBar: AppBar(
           title: const Text('Equipos'),
           actions: [
+            MsgqExportButton(
+              reportBuilder: () => analytics == null
+                  ? null
+                  : buildEquipmentReport(
+                      analytics,
+                      scope: msgqScopeLabel(ref),
+                      dimension: ref.read(msgqDimensionProvider),
+                    ),
+            ),
             IconButton(
               tooltip: 'Sincronizar',
               icon: const Icon(Icons.sync),
