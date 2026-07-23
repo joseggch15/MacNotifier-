@@ -16,12 +16,14 @@ import 'package:share_plus/share_plus.dart';
 
 import '../analytics/activity_audit.dart';
 import '../analytics/burn_rate.dart';
+import '../analytics/data_quality.dart';
 import '../analytics/equipment_analytics.dart';
 import '../domain/equipment.dart';
 import '../analytics/hardware_health.dart';
 import '../analytics/mac_health.dart';
 import '../analytics/product_audit.dart';
 import '../analytics/rfid_inventory.dart';
+import '../analytics/sfl_audit.dart';
 import '../analytics/tag_hopping.dart';
 import '../analytics/tank_analytics.dart';
 import '../analytics/volume_deviation.dart';
@@ -826,6 +828,253 @@ MsgqReport buildActivityReport(
             'horometro solo participan de la deteccion de fantasmas.',
         'Un equipo sin productos establecidos se omite de la auditoria de '
             'producto: no hay base con que juzgarlo.',
+      ],
+    );
+
+/// Reporte de auditoria SFL (excesos, conflictos y clasificacion por equipo).
+MsgqReport buildSflReport(
+  SflAudit audit, {
+  required String scope,
+}) =>
+    MsgqReport(
+      title: 'Auditoria SFL',
+      subtitle: scope,
+      kpis: [
+        MsgqReportKpi('Excesos', _n(audit.kpis.exceedances)),
+        MsgqReportKpi('Exceso total', _l(audit.kpis.totalExcessL)),
+        MsgqReportKpi('Peor exceso', _l(audit.kpis.worstExcessL)),
+        MsgqReportKpi('Equipos', _n(audit.kpis.equipmentAffected)),
+        MsgqReportKpi('% de despachos', _pct(audit.kpis.pctOfDispenses)),
+        MsgqReportKpi('Conflictos sin equipo', _n(audit.kpis.conflicts),
+            hint: '${audit.kpis.conflictsOverMax} sobre SFL flota'),
+      ],
+      sections: [
+        MsgqReportSection(
+          title: 'Excesos por equipo',
+          note: 'Cada despacho que supera el SFL del equipo por mas de la '
+              'tolerancia',
+          table: MsgqReportTable(
+            headers: const [
+              'Fecha',
+              'Equipo',
+              'Producto',
+              'Volumen',
+              'SFL',
+              'Exceso',
+              'Exceso %',
+              'Operador',
+            ],
+            rows: audit.exceedances
+                .map((e) => [
+                      _day(e.date),
+                      e.equipmentId,
+                      e.product ?? '-',
+                      _n(e.volume),
+                      _n(e.sfl),
+                      _n(e.excess),
+                      _pct(e.excessPct),
+                      e.fieldUser ?? '-',
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Por operador',
+          table: MsgqReportTable(
+            headers: const [
+              'Operador',
+              'Excesos',
+              'Exceso total (L)',
+              'Peor (L)',
+            ],
+            rows: audit
+                .byFieldUser()
+                .map((r) => [
+                      r.key,
+                      _n(r.exceedances),
+                      _n(r.totalExcessL),
+                      _n(r.worstExcessL),
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Por categoria',
+          table: MsgqReportTable(
+            headers: const [
+              'Categoria',
+              'Excesos',
+              'Equipos',
+              'Exceso total (L)',
+            ],
+            rows: audit
+                .byCategory()
+                .map((r) => [
+                      r.key,
+                      _n(r.exceedances),
+                      _n(r.equipmentCount ?? 0),
+                      _n(r.totalExcessL),
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Conflictos sin equipo valido',
+          note: 'Despachos no_equip / Unauthorised; over_max = superan el SFL '
+              'maximo de la flota para ese producto',
+          table: MsgqReportTable(
+            headers: const [
+              'Fecha',
+              'Producto',
+              'Volumen',
+              'SFL flota',
+              'Sobre max',
+              'Tipo',
+              'Operador',
+            ],
+            rows: audit.conflicts
+                .map((c) => [
+                      _day(c.date),
+                      c.product ?? '-',
+                      _n(c.volume),
+                      c.fleetMaxSfl == null ? '-' : _n(c.fleetMaxSfl!),
+                      c.overMax ? 'SI' : 'no',
+                      c.type ?? '-',
+                      c.fieldUser ?? '-',
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Clasificacion por equipo',
+          note: 'Todos los despachos, no solo los excesos: da el % Over por '
+              'equipo',
+          table: MsgqReportTable(
+            headers: const [
+              'Equipo',
+              'Descripcion',
+              'SFL',
+              'Fuente',
+              'Despachos',
+              'Over SFL',
+              '% Over',
+              'Vol. max',
+            ],
+            rows: audit
+                .equipmentSummary()
+                .map((r) => [
+                      r.equipmentId,
+                      r.description ?? '-',
+                      r.sfl == null ? '-' : _n(r.sfl!),
+                      r.sflSource.label,
+                      _n(r.dispenses),
+                      _n(r.overSfl),
+                      _pct(r.overPct),
+                      _n(r.maxVolumeL),
+                    ])
+                .toList(),
+          ),
+        ),
+      ],
+      footnotes: const [
+        'La tolerancia filtra el ruido de medicion: un despacho solo cuenta '
+            'como exceso si supera el SFL por mas del 2%. El exceso reportado '
+            'sigue siendo volumen - SFL.',
+      ],
+    );
+
+/// Reporte de calidad de datos del maestro.
+MsgqReport buildDataQualityReport(
+  DataQualityAudit audit, {
+  required String scope,
+}) =>
+    MsgqReport(
+      title: 'Calidad de datos',
+      subtitle: scope,
+      kpis: [
+        MsgqReportKpi(
+            'Campos con problemas', _n(audit.kpis.fieldsWithProblems)),
+        MsgqReportKpi('Grupos sucios', _n(audit.kpis.dirtyGroups)),
+        MsgqReportKpi('Equipos afectados', _n(audit.kpis.equipmentAffected)),
+        MsgqReportKpi('Pares similares', _n(audit.kpis.similarPairs)),
+      ],
+      sections: [
+        MsgqReportSection(
+          title: 'Resumen por campo',
+          note: 'La brecha entre valores distintos y reales es la magnitud del '
+              'dirty data',
+          table: MsgqReportTable(
+            headers: const [
+              'Campo',
+              'Distintos',
+              'Reales',
+              'Grupos sucios',
+              'Equipos',
+              'Pares fuzzy',
+            ],
+            rows: audit.summary
+                .map((s) => [
+                      s.field,
+                      _n(s.distinctValues),
+                      _n(s.realValues),
+                      _n(s.dirtyGroups),
+                      _n(s.equipmentAffected),
+                      _n(s.similarPairs),
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Grupos de variantes',
+          note: 'Escrituras del mismo valor; se sugiere la mas frecuente como '
+              'canonica',
+          table: MsgqReportTable(
+            headers: const [
+              'Campo',
+              'Canonico sugerido',
+              'Variantes',
+              'Equipos',
+              'Escrituras',
+            ],
+            rows: audit.clusters
+                .map((c) => [
+                      c.field,
+                      c.canonical,
+                      _n(c.variants),
+                      _n(c.equipmentCount),
+                      c.writings,
+                    ])
+                .toList(),
+          ),
+        ),
+        MsgqReportSection(
+          title: 'Duplicados probables (fuzzy)',
+          note: 'Typos u OCR que la normalizacion no fusiono',
+          table: MsgqReportTable(
+            headers: const [
+              'Campo',
+              'Valor A',
+              'Equipos A',
+              'Valor B',
+              'Equipos B',
+              'Similitud %',
+            ],
+            rows: audit.fuzzy
+                .map((f) => [
+                      f.field,
+                      f.valueA,
+                      _n(f.equipmentA),
+                      f.valueB,
+                      _n(f.equipmentB),
+                      _pct(f.similarityPct),
+                    ])
+                .toList(),
+          ),
+        ),
+      ],
+      footnotes: const [
+        'La auditoria corre sobre el maestro COMPLETO replicado: la calidad del '
+            'dato es una propiedad del registro, no del filtro de la vista.',
       ],
     );
 

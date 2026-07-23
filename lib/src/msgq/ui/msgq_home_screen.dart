@@ -14,13 +14,16 @@ import '../../state/providers.dart';
 import '../data/replica_database.dart';
 import '../state/msgq_providers.dart';
 import 'activity_screen.dart';
+import 'alerts_screen.dart';
 import 'burn_rate_screen.dart';
+import 'data_quality_screen.dart';
 import 'equipment_screen.dart';
 import 'hardware_screen.dart';
 import 'mac_health_screen.dart';
 import 'msgq_filters.dart';
 import 'msgq_widgets.dart';
 import 'rfid_screen.dart';
+import 'sfl_screen.dart';
 import 'tag_hopping_screen.dart';
 import 'tank_screen.dart';
 import 'volume_deviation_screen.dart';
@@ -67,6 +70,17 @@ class MsgqHomeScreen extends ConsumerWidget {
                   ),
                 const MsgqSyncStatusBar(),
                 const Divider(height: 1),
+                _ModuleTile(
+                  icon: Icons.notifications_active_outlined,
+                  title: l.t('Panel de alertas', 'Alerts panel'),
+                  subtitle: l.t(
+                    'Todo lo que esta mal ahora mismo, agregado de cada '
+                        'auditor, con enlace a su modulo',
+                    'Everything wrong right now, aggregated from every '
+                        'auditor, linking to each module',
+                  ),
+                  onTap: () => _open(context, const AlertsScreen()),
+                ),
                 _ModuleTile(
                   icon: Icons.local_gas_station_outlined,
                   title: l.t('Tanques y consumo', 'Tanks & consumption'),
@@ -142,6 +156,28 @@ class MsgqHomeScreen extends ConsumerWidget {
                         'operation and foreign product',
                   ),
                   onTap: () => _open(context, const ActivityScreen()),
+                ),
+                _ModuleTile(
+                  icon: Icons.local_gas_station_outlined,
+                  title: l.t('Auditoria SFL', 'SFL audit'),
+                  subtitle: l.t(
+                    'Sobrellenados sobre el Safe Fill Level, conflictos sin '
+                        'equipo y clasificacion por equipo',
+                    'Overfills over the Safe Fill Level, unattributed '
+                        'conflicts and per-equipment classification',
+                  ),
+                  onTap: () => _open(context, const SflScreen()),
+                ),
+                _ModuleTile(
+                  icon: Icons.cleaning_services_outlined,
+                  title: l.t('Calidad de datos', 'Data quality'),
+                  subtitle: l.t(
+                    'Variantes del mismo valor y duplicados por typo en el '
+                        'maestro de equipos',
+                    'Variants of the same value and typo duplicates in the '
+                        'equipment master',
+                  ),
+                  onTap: () => _open(context, const DataQualityScreen()),
                 ),
                 _ModuleTile(
                   icon: Icons.compare_arrows,

@@ -22,13 +22,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/providers.dart';
 import '../analytics/activity_audit.dart';
+import '../analytics/alerts_overview.dart';
 import '../analytics/burn_rate.dart';
+import '../analytics/data_quality.dart';
 import '../analytics/equipment_analytics.dart';
 import '../analytics/grouping.dart';
 import '../analytics/hardware_health.dart';
 import '../analytics/mac_health.dart';
 import '../analytics/product_audit.dart';
 import '../analytics/rfid_inventory.dart';
+import '../analytics/sfl_audit.dart';
 import '../analytics/tag_hopping.dart';
 import '../analytics/tank_analytics.dart';
 import '../analytics/volume_deviation.dart';
@@ -343,6 +346,31 @@ final macHealthProvider = Provider<MacHealthAudit?>((ref) {
   );
 });
 
+/// Auditoria de despachos contra el Safe Fill Level (excesos + conflictos +
+/// clasificacion por equipo). Se filtra por circuito como los tanques.
+final sflAuditProvider = Provider<SflAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  final circuit = ref.watch(msgqCircuitProvider);
+  final movements = circuit == null
+      ? dataset.movements
+      : dataset.movements.where((m) => m.circuit == circuit).toList();
+  return SflAudit.run(
+    movements: movements,
+    limits: dataset.limits,
+    equipment: dataset.equipment,
+  );
+});
+
+/// Auditoria de calidad de datos del maestro. NO se filtra por rango ni
+/// circuito: la calidad del dato es una propiedad del registro, no de la
+/// consulta, asi que corre sobre el maestro completo replicado.
+final dataQualityProvider = Provider<DataQualityAudit?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+  return DataQualityAudit.run(equipment: dataset.equipment);
+});
+
 /// Auditoria de desviacion de volumen en entregas.
 ///
 /// Se filtra por circuito igual que los tanques: una discrepancia de diesel y
@@ -355,6 +383,107 @@ final volumeDeviationProvider = Provider<VolumeDeviationAudit?>((ref) {
       ? dataset.movements
       : dataset.movements.where((m) => m.circuit == circuit).toList();
   return VolumeDeviationAudit.run(movements: movements);
+});
+
+/// Panel consolidado de alertas.
+///
+/// AGREGA los auditores ya calculados; no reimplementa deteccion. Al watchear
+/// cada provider derivado, se recalcula solo cuando cambia el dato o un filtro,
+/// igual que cada pantalla — asi el conteo del panel jamas discrepa del suyo.
+final alertsOverviewProvider = Provider<AlertsOverview?>((ref) {
+  final dataset = ref.watch(msgqDatasetProvider).valueOrNull;
+  if (dataset == null) return null;
+
+  final burn = ref.watch(burnRateProvider);
+  final hardware = ref.watch(hardwareHealthProvider);
+  final activity = ref.watch(activityAuditProvider);
+  final product = ref.watch(productAuditProvider);
+  final sfl = ref.watch(sflAuditProvider);
+  final tagHopping = ref.watch(tagHoppingProvider);
+  final volume = ref.watch(volumeDeviationProvider);
+  final mac = ref.watch(macHealthProvider);
+  final quality = ref.watch(dataQualityProvider);
+
+  final categories = <AlertCategory>[
+    AlertCategory(
+      title: 'Burn rate anomalo',
+      count: burn?.kpis.anomalousEquipment ?? 0,
+      severity: AlertSeverity.warning,
+      module: AlertModule.burnRate,
+      detail: 'equipos fuera de la linea base de su categoria',
+    ),
+    AlertCategory(
+      title: 'Ordenes de hardware',
+      count: hardware?.kpis.workOrders ?? 0,
+      severity: AlertSeverity.critical,
+      module: AlertModule.hardware,
+      detail: 'SMU, re-tagueo y medidores degradados',
+    ),
+    AlertCategory(
+      title: 'Combustible no registrado',
+      count: activity?.kpis.unfueledIntervals ?? 0,
+      severity: AlertSeverity.critical,
+      module: AlertModule.activity,
+      detail: 'trabaja sin repostar dentro del FMS',
+    ),
+    AlertCategory(
+      title: 'Despachos sin operacion',
+      count: activity?.kpis.frozenRuns ?? 0,
+      severity: AlertSeverity.warning,
+      module: AlertModule.activity,
+      detail: 'SMU congelado; ${activity?.kpis.runsOverSfl ?? 0} sobre SFL',
+    ),
+    AlertCategory(
+      title: 'Equipos fantasma',
+      count: activity?.kpis.idleAssets ?? 0,
+      severity: AlertSeverity.info,
+      module: AlertModule.activity,
+      detail: 'In Service sin despachos',
+    ),
+    AlertCategory(
+      title: 'Producto ajeno al equipo',
+      count: product?.kpis.mismatches ?? 0,
+      severity: AlertSeverity.critical,
+      module: AlertModule.product,
+      detail: '${product?.kpis.crossClass ?? 0} cruces de clase (tag clonado)',
+    ),
+    AlertCategory(
+      title: 'Sobrellenados SFL',
+      count: sfl?.kpis.exceedances ?? 0,
+      severity: AlertSeverity.warning,
+      module: AlertModule.sfl,
+      detail: '${sfl?.kpis.conflicts ?? 0} sin equipo valido',
+    ),
+    AlertCategory(
+      title: 'Tag hopping',
+      count: tagHopping?.kpis.critical ?? 0,
+      severity: AlertSeverity.critical,
+      module: AlertModule.tagHopping,
+      detail: 'el mismo tag en dos lugares a la vez',
+    ),
+    AlertCategory(
+      title: 'Desviacion de volumen',
+      count: volume?.kpis.flagged ?? 0,
+      severity: AlertSeverity.warning,
+      module: AlertModule.volumeDeviation,
+      detail: 'medidor vs guia en entregas',
+    ),
+    AlertCategory(
+      title: 'Consolas inestables',
+      count: mac?.kpis.flapping ?? 0,
+      severity: AlertSeverity.warning,
+      module: AlertModule.macHealth,
+      detail: 'caidas frecuentes en 24 h',
+    ),
+    AlertCategory(
+      title: 'Calidad de datos',
+      count: quality?.kpis.fieldsWithProblems ?? 0,
+      severity: AlertSeverity.info,
+      module: AlertModule.dataQuality,
+      detail: 'campos del maestro con variantes o duplicados',
+    ),
+  ];
+  return AlertsOverview.of(categories);
 });
 
 /// Filas por tabla de la replica (panel de diagnostico).

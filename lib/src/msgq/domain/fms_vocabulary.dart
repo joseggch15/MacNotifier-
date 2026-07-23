@@ -434,6 +434,18 @@ enum SflSource {
   final String label;
 }
 
+/// Categoria de alerta para un despacho que excede el Safe Fill Level.
+const String alertSflExceeded = 'Despacho excede Safe Fill Level';
+
+/// Categoria para un despacho SIN equipo valido cuyo volumen supera el SFL
+/// maximo de la flota: combustible sin trazabilidad y por encima de lo seguro.
+const String alertSflConflict = 'Despacho sin equipo / no autorizado';
+
+/// El grupo "Newmont" es el dueño de la mina, no un Business Partner. Los BP son
+/// todos los demas grupos (contratistas / terceros); el selector de la vista SFL
+/// separa Newmont de BP con estos nombres.
+const String newmontGroup = 'Newmont';
+
 // ===========================================================================
 // Auditoria de Tag Hopping ("el tag en el bolsillo")
 // ===========================================================================
