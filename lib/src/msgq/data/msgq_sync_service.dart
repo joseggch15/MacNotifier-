@@ -23,6 +23,7 @@ import '../../models/adapt_mac.dart';
 import '../domain/mac_event.dart';
 import '../domain/change_event.dart';
 import '../domain/equipment.dart';
+import '../domain/fms_vocabulary.dart';
 import '../domain/movement.dart';
 import '../domain/tank.dart';
 import 'msgq_client.dart';
@@ -136,20 +137,16 @@ class MsgqSyncService {
     var macEvents = 0;
 
     try {
-      // -- movimientos (incremental) ---------------------------------------
+      // -- movimientos (incremental + RESUMIBLE por pagina) ----------------
+      // Cada pagina se persiste y su cursor se guarda AL VUELO: si el proceso
+      // se corta (pantalla apagada, red caida), la proxima pasada reanuda desde
+      // el cursor en vez de re-descargar las 30.000 filas. El watermark solo
+      // avanza cuando las TRES conexiones terminan.
       if (!cancelled()) {
         onProgress?.call(const SyncProgress(phase: SyncPhase.movements));
-        final since = await _since(ReplicaTable.movements);
-        final rows = await client.fetchMovements(
-          updatedFrom: since,
-          onProgress: (_, records) => onProgress
-              ?.call(SyncProgress(phase: SyncPhase.movements, records: records)),
-          isCancelled: isCancelled,
-        );
-        if (!cancelled()) {
-          movements = await replica.upsertMovements(rows);
-          await _advance(ReplicaTable.movements, rows, (m) => m.updatedAt);
-        }
+        movements = await _syncMovements(client, isCancelled, (records) =>
+            onProgress?.call(
+                SyncProgress(phase: SyncPhase.movements, records: records)));
       }
 
       // -- reconciliaciones (incremental) -----------------------------------
@@ -219,20 +216,12 @@ class MsgqSyncService {
             ReplicaTable.adaptMac, DateTime.now().toUtc());
       }
 
-      // -- log de auditoria (incremental) -----------------------------------
+      // -- log de auditoria (incremental + RESUMIBLE por pagina) ------------
       if (!cancelled()) {
         onProgress?.call(const SyncProgress(phase: SyncPhase.changes));
-        final since = await _since(ReplicaTable.changeEvents);
-        final rows = await client.fetchAllChanges(
-          changesFrom: since,
-          onProgress: (records) => onProgress
-              ?.call(SyncProgress(phase: SyncPhase.changes, records: records)),
-          isCancelled: isCancelled,
-        );
-        if (!cancelled()) {
-          changes = await replica.upsertChangeEvents(rows);
-          await _advance(ReplicaTable.changeEvents, rows, (c) => c.changedAt);
-        }
+        changes = await _syncChanges(client, isCancelled, (records) =>
+            onProgress?.call(
+                SyncProgress(phase: SyncPhase.changes, records: records)));
       }
 
       onCachesDiscovered?.call(
@@ -261,6 +250,113 @@ class MsgqSyncService {
     } finally {
       client.close();
     }
+  }
+
+  /// Sincroniza las TRES conexiones de movimientos de forma resumible.
+  ///
+  /// La ANCLA (`updatedFrom`) se persiste con [replica.setFlag]: el cursor solo
+  /// vale para la misma consulta, asi que el filtro debe ser identico entre el
+  /// intento original y la reanudacion. Sin anclarlo, `replicaHistoryStart()`
+  /// —que es `ahora - 400 dias`— cambiaria entre pasadas y el cursor apuntaria
+  /// a otro conjunto de resultados.
+  Future<int> _syncMovements(
+    MsgqClient client,
+    bool Function()? isCancelled,
+    void Function(int records) onRecords,
+  ) async {
+    const keys = ['mv:DISPENSE', 'mv:DELIVERY', 'mv:TRANSFER'];
+    final since = await _anchoredSince('mv_from', ReplicaTable.movements);
+    var written = 0;
+    var records = 0;
+
+    for (final kind in const [
+      MovementKind.dispense,
+      MovementKind.delivery,
+      MovementKind.transfer,
+    ]) {
+      if (isCancelled?.call() ?? false) break;
+      final key = 'mv:${kind.wire}';
+      final resume = await replica.resumeState(key);
+      if (resume.done) continue; // ya completada en un intento anterior
+      await client.fetchMovementsPaged(
+        kind: kind,
+        updatedFrom: since,
+        startCursor: resume.cursor,
+        isCancelled: isCancelled,
+        onPage: (page, endCursor, hasNext) async {
+          written += await replica.upsertMovements(page);
+          records += page.length;
+          await replica.saveResume(key, cursor: endCursor, done: !hasNext);
+          onRecords(records);
+        },
+      );
+    }
+
+    // Solo cuando las tres terminaron: fija el watermark al maximo REALMENTE
+    // replicado (leido de la tabla, no del lote) y limpia los cursores ->
+    // vuelve a modo incremental.
+    if (!(isCancelled?.call() ?? false) && await replica.allResumed(keys)) {
+      final maxTs =
+          await replica.maxTimestamp(ReplicaTable.movements, 'updated_at');
+      await replica.setWatermark(ReplicaTable.movements, maxTs ?? since);
+      await replica.clearResume(keys);
+      await replica.clearFlag('mv_from');
+    }
+    return written;
+  }
+
+  /// Sincroniza el log de auditoria (dos tipos de registro) de forma resumible.
+  Future<int> _syncChanges(
+    MsgqClient client,
+    bool Function()? isCancelled,
+    void Function(int records) onRecords,
+  ) async {
+    final keys = [for (final t in changeRecordTypes) 'ch:$t'];
+    final since = await _anchoredSince('ch_from', ReplicaTable.changeEvents);
+    var written = 0;
+    var records = 0;
+
+    for (final recordType in changeRecordTypes) {
+      if (isCancelled?.call() ?? false) break;
+      final key = 'ch:$recordType';
+      final resume = await replica.resumeState(key);
+      if (resume.done) continue;
+      await client.fetchChangesPaged(
+        recordType: recordType,
+        changesFrom: since,
+        startCursor: resume.cursor,
+        isCancelled: isCancelled,
+        onPage: (page, endCursor, hasNext) async {
+          written += await replica.upsertChangeEvents(page);
+          records += page.length;
+          await replica.saveResume(key, cursor: endCursor, done: !hasNext);
+          onRecords(records);
+        },
+      );
+    }
+
+    if (!(isCancelled?.call() ?? false) && await replica.allResumed(keys)) {
+      final maxTs =
+          await replica.maxTimestamp(ReplicaTable.changeEvents, 'changed_at');
+      await replica.setWatermark(ReplicaTable.changeEvents, maxTs ?? since);
+      await replica.clearResume(keys);
+      await replica.clearFlag('ch_from');
+    }
+    return written;
+  }
+
+  /// `updatedFrom` estable para un backfill resumible: si ya hay una ancla
+  /// guardada (backfill en curso), se reusa; si no, se calcula desde el
+  /// watermark y se persiste para las reanudaciones.
+  Future<DateTime> _anchoredSince(String flag, String entity) async {
+    final stored = await replica.getFlag(flag);
+    if (stored != null) {
+      final parsed = DateTime.tryParse(stored);
+      if (parsed != null) return parsed;
+    }
+    final since = await _since(entity);
+    await replica.setFlag(flag, since.toUtc().toIso8601String());
+    return since;
   }
 
   /// Desde cuando pedir una entidad: su watermark menos el solapamiento, o el

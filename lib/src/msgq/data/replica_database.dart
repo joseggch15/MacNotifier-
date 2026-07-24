@@ -88,7 +88,9 @@ class ReplicaDatabase {
   /// v4 anadio `adaptmac` + `adaptmac_history`: el endpoint NO guarda historial
   /// de consolas, asi que se construye observando el maestro y comparandolo
   /// contra el snapshot anterior.
-  static const _schemaVersion = 4;
+  /// v5 anadio `sync_cursor` + `sync_flags`: hacen RESUMIBLE el backfill
+  /// paginado, para que una interrupcion no reinicie la descarga desde cero.
+  static const _schemaVersion = 5;
   static const _defaultFileName = 'msgq_replica.sqlite3';
 
   /// Abre (y crea si hace falta) la replica.
@@ -210,6 +212,7 @@ class ReplicaDatabase {
     _createRfidHistory(batch);
     _createProductHistory(batch);
     _createMacTables(batch);
+    _createResumeTables(batch);
 
     // Watermark por entidad: el `updatedAt` mas alto ya replicado.
     batch.execute('''
@@ -274,6 +277,27 @@ class ReplicaDatabase {
     batch.execute('CREATE INDEX idx_mac_history_kind ON adaptmac_history("kind")');
   }
 
+  /// Progreso de un backfill paginado, para poder REANUDARLO.
+  ///
+  /// `sync_cursor` guarda, por conexion (`mv:DISPENSE`, `ch:EquipmentRfid`...),
+  /// el ultimo cursor devuelto por la API y si esa conexion ya termino. Sin
+  /// esto, una descarga de 30.000 filas interrumpida a mitad reiniciaba desde
+  /// cero: el watermark solo se movia al final, asi que un corte perdia todo el
+  /// avance. `sync_flags` guarda el `updatedFrom` ANCLA del backfill en curso —
+  /// el cursor solo es valido para la MISMA consulta, asi que el filtro debe
+  /// ser identico entre el intento original y la reanudacion.
+  static void _createResumeTables(Batch batch) {
+    batch.execute('''
+      CREATE TABLE sync_cursor (
+        "key" TEXT PRIMARY KEY, "cursor" TEXT, "done" INTEGER,
+        "updated_at" TEXT
+      )''');
+    batch.execute('''
+      CREATE TABLE sync_flags (
+        "name" TEXT PRIMARY KEY, "value" TEXT
+      )''');
+  }
+
   /// Migracion acumulativa: cada version aplica SOLO lo suyo, asi una replica
   /// en v1 llega a la ultima encadenando todos los pasos en una sola apertura.
   static Future<void> _upgradeSchema(Database db, int from, int to) async {
@@ -281,7 +305,77 @@ class ReplicaDatabase {
     if (from < 2) _createRfidHistory(batch);
     if (from < 3) _createProductHistory(batch);
     if (from < 4) _createMacTables(batch);
+    if (from < 5) _createResumeTables(batch);
     await batch.commit(noResult: true);
+  }
+
+  // =========================================================================
+  // Reanudacion de backfill (cursores + anclas)
+  // =========================================================================
+
+  /// Estado de reanudacion de una conexion: su ultimo cursor y si termino.
+  Future<({String? cursor, bool done})> resumeState(String key) async {
+    final rows = await _db.query('sync_cursor',
+        where: '"key" = ?', whereArgs: [key], limit: 1);
+    if (rows.isEmpty) return (cursor: null, done: false);
+    return (
+      cursor: asText(rows.first['cursor']),
+      done: (asInt(rows.first['done']) ?? 0) == 1,
+    );
+  }
+
+  /// Guarda el avance de una conexion tras persistir una pagina.
+  Future<void> saveResume(String key,
+      {String? cursor, required bool done}) async {
+    await _db.insert(
+      'sync_cursor',
+      {
+        'key': key,
+        'cursor': cursor,
+        'done': done ? 1 : 0,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// True si TODAS las claves estan marcadas como terminadas.
+  Future<bool> allResumed(Iterable<String> keys) async {
+    for (final key in keys) {
+      if (!(await resumeState(key)).done) return false;
+    }
+    return true;
+  }
+
+  /// Limpia los cursores de un backfill ya completado (vuelve a modo
+  /// incremental normal).
+  Future<void> clearResume(Iterable<String> keys) async {
+    for (final key in keys) {
+      await _db.delete('sync_cursor', where: '"key" = ?', whereArgs: [key]);
+    }
+  }
+
+  Future<String?> getFlag(String name) async {
+    final rows = await _db.query('sync_flags',
+        columns: ['value'], where: '"name" = ?', whereArgs: [name], limit: 1);
+    return rows.isEmpty ? null : asText(rows.first['value']);
+  }
+
+  Future<void> setFlag(String name, String value) async {
+    await _db.insert('sync_flags', {'name': name, 'value': value},
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> clearFlag(String name) async {
+    await _db.delete('sync_flags', where: '"name" = ?', whereArgs: [name]);
+  }
+
+  /// Instante mas alto de una columna de fecha en una tabla — la referencia
+  /// AUTORITATIVA para el watermark: es el maximo realmente replicado, sin
+  /// depender de que pagina lo escribio ni en que intento.
+  Future<DateTime?> maxTimestamp(String table, String column) async {
+    final rows = await _db.rawQuery('SELECT MAX("$column") AS m FROM $table');
+    return asDate(rows.first['m']);
   }
 
   // =========================================================================

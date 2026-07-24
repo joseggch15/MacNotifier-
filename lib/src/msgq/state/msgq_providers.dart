@@ -19,6 +19,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../state/providers.dart';
 import '../analytics/activity_audit.dart';
@@ -151,6 +152,11 @@ class MsgqDatasetController extends AsyncNotifier<MsgqDataset> {
     _cancelled = false;
     ref.read(msgqSyncErrorProvider.notifier).state = null;
     final store = ref.read(appStoreProvider);
+    // Mantiene la pantalla encendida durante el ciclo: el backfill inicial son
+    // decenas de miles de filas y el SO suspende la app al apagar la pantalla.
+    // Es una barrera; aunque falle, la sincronizacion YA es resumible por
+    // pagina, asi que una interrupcion no reinicia la descarga.
+    await _enableWakelock();
     try {
       final replica = await ref.read(replicaProvider.future);
       final service = MsgqSyncService(replica: replica, settings: settings);
@@ -173,6 +179,25 @@ class MsgqDatasetController extends AsyncNotifier<MsgqDataset> {
     } finally {
       _syncing = false;
       ref.read(msgqSyncProgressProvider.notifier).state = null;
+      await _disableWakelock();
+    }
+  }
+
+  /// El wakelock no existe en escritorio (donde corren los tests); un fallo del
+  /// plugin no debe tumbar la sincronizacion, asi que se traga.
+  Future<void> _enableWakelock() async {
+    try {
+      await WakelockPlus.enable();
+    } on Object {
+      // sin wakelock: la resumibilidad por pagina sigue cubriendo el corte.
+    }
+  }
+
+  Future<void> _disableWakelock() async {
+    try {
+      await WakelockPlus.disable();
+    } on Object {
+      // ignorar
     }
   }
 

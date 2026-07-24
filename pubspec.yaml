@@ -66,6 +66,7 @@ dependencies:
   # este proyecto compila con 3.29 (igual que workmanager, arriba). `flutter
   # analyze` NO lo detecta —no analiza dependencias—; solo falla al compilar.
   fl_chart: ^0.70.2
+  wakelock_plus: ^1.4.0
 
 dev_dependencies:
   flutter_test:

@@ -110,6 +110,62 @@ class MsgqClient {
     return out;
   }
 
+  /// Pagina UNA conexion de movimientos emitiendo CADA pagina, sin acumular.
+  ///
+  /// Es el camino RESUMIBLE: el llamador persiste cada pagina y guarda su
+  /// [endCursor]; si el proceso se interrumpe (pantalla apagada, red caida,
+  /// app en segundo plano), reanuda pasando ese cursor como [startCursor] y
+  /// continua donde quedo, en vez de re-descargar las 30.000 filas. Ademas
+  /// nunca sostiene mas de una pagina en memoria — importa en un telefono de
+  /// gama baja.
+  ///
+  /// [onPage] recibe la pagina ya parseada, el cursor con el que reanudar, y si
+  /// quedan mas paginas. Se aguarda (`await`) para que la escritura de una
+  /// pagina termine antes de pedir la siguiente.
+  Future<void> fetchMovementsPaged({
+    required MovementKind kind,
+    DateTime? updatedFrom,
+    String? startCursor,
+    required Future<void> Function(
+            List<Movement> page, String? endCursor, bool hasNext)
+        onPage,
+    bool Function()? isCancelled,
+  }) async {
+    final query = await _queryFor(kind);
+    final connection = _connectionFor(kind);
+    final variables = await _movementVariables(updatedFrom);
+    var cursor = startCursor;
+    for (var page = 0; page < 100000; page++) { // cota de seguridad
+      if (isCancelled?.call() ?? false) return;
+      final data = await _client.execute(query, {
+        ...variables,
+        if (cursor != null) 'after': cursor,
+      });
+      final site = data['site'];
+      final conn = site is Map<String, dynamic> ? site[connection] : null;
+      if (conn is! Map<String, dynamic>) return;
+      final movements = <Movement>[];
+      final edges = conn['edges'];
+      if (edges is List) {
+        for (final edge in edges) {
+          final node = edge is Map<String, dynamic> ? edge['node'] : null;
+          if (node is Map<String, dynamic>) {
+            movements.add(Movement.fromNode(node, kind));
+          }
+        }
+      }
+      final pageInfo = conn['pageInfo'];
+      final hasNext =
+          pageInfo is Map<String, dynamic> && pageInfo['hasNextPage'] == true;
+      cursor = pageInfo is Map<String, dynamic>
+          ? pageInfo['endCursor'] as String?
+          : null;
+      final more = hasNext && cursor != null;
+      await onPage(movements, cursor, more);
+      if (!more) return;
+    }
+  }
+
   String _connectionFor(MovementKind kind) => switch (kind) {
         MovementKind.dispense => 'dispenses',
         MovementKind.delivery => 'deliveries',
@@ -254,6 +310,52 @@ class MsgqClient {
       isCancelled: isCancelled,
     );
     return nodes.expand(ChangeEvent.fromNode).toList(growable: false);
+  }
+
+  /// Igual que [fetchChanges] pero emitiendo cada pagina (camino RESUMIBLE).
+  Future<void> fetchChangesPaged({
+    required String recordType,
+    DateTime? changesFrom,
+    String? startCursor,
+    required Future<void> Function(
+            List<ChangeEvent> page, String? endCursor, bool hasNext)
+        onPage,
+    bool Function()? isCancelled,
+  }) async {
+    final filter = <String, dynamic>{
+      'siteId': await _client.resolveSiteId(),
+      'recordType': recordType,
+      if (changesFrom != null)
+        'changesFrom': changesFrom.toUtc().toIso8601String(),
+    };
+    var cursor = startCursor;
+    for (var page = 0; page < 100000; page++) {
+      if (isCancelled?.call() ?? false) return;
+      final data = await _client.execute(q.changesQuery, {
+        'filter': filter,
+        'first': kPageSize,
+        if (cursor != null) 'after': cursor,
+      });
+      final conn = data['changes'];
+      if (conn is! Map<String, dynamic>) return;
+      final events = <ChangeEvent>[];
+      final edges = conn['edges'];
+      if (edges is List) {
+        for (final edge in edges) {
+          final node = edge is Map<String, dynamic> ? edge['node'] : null;
+          if (node is Map<String, dynamic>) events.addAll(ChangeEvent.fromNode(node));
+        }
+      }
+      final pageInfo = conn['pageInfo'];
+      final hasNext =
+          pageInfo is Map<String, dynamic> && pageInfo['hasNextPage'] == true;
+      cursor = pageInfo is Map<String, dynamic>
+          ? pageInfo['endCursor'] as String?
+          : null;
+      final more = hasNext && cursor != null;
+      await onPage(events, cursor, more);
+      if (!more) return;
+    }
   }
 
   /// Log de auditoria de TODOS los tipos que la analitica de flota necesita
