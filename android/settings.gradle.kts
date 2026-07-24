@@ -19,7 +19,9 @@ pluginManagement {
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.7.0" apply false
-    id("org.jetbrains.kotlin.android") version "1.8.22" apply false
+    // 2.1.0 (la de la plantilla de Flutter 3.29): la 1.8.22 no compila el
+    // plugin wakelock_plus. AGP 8.7 y Gradle 8.10.2 ya soportan Kotlin 2.x.
+    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
 }
 
 include(":app")
